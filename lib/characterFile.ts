@@ -64,8 +64,9 @@ export function buildCardFile(
       scenario: character.scenario ?? '',
       greeting: character.greeting ?? '',
       memory_note: character.memory_note ?? '',
-      model_id: character.model_id,
-      model_label: character.model_label,
+      // 供应商 id 是这台机器上的，导到别处大概率对不上，所以不带出去
+      model_id: null,
+      model_label: null,
       relationship_level: character.relationship_level,
       affinity: character.affinity,
     },

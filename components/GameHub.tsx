@@ -161,11 +161,13 @@ function RpsGame({
       recorded.current = true;
       setFinal(result);
       try {
-        const r = await api<{ line: string; message: Message }>('/api/game/finish', {
+        const r = await api<{ line: string; message: Message; marker?: Message }>('/api/game/finish', {
           method: 'POST',
           body: { characterId: character.id, game: 'rps', result, note },
         });
         if (r.line) setTalk(r.line);
+        // 先落结果提示条，再落她说的那句话
+        if (r.marker) onFinishLine(r.marker);
         if (r.message) onFinishLine(r.message);
       } catch {
         /* 记录失败不影响继续玩 */
@@ -325,11 +327,12 @@ function GomokuGame({
       recorded.current = true;
       setOver(result);
       try {
-        const r = await api<{ line: string; message: Message }>('/api/game/finish', {
+        const r = await api<{ line: string; message: Message; marker?: Message }>('/api/game/finish', {
           method: 'POST',
           body: { characterId: character.id, game: 'gomoku', result, note },
         });
         if (r.line) setTalk(r.line);
+        if (r.marker) onFinishLine(r.marker);
         if (r.message) onFinishLine(r.message);
       } catch {
         /* ignore */

@@ -254,8 +254,25 @@ function setCurrent(providerId, model) {
   return current();
 }
 
-/** 聊天时用：拿到可直接请求的供应商配置 + 模型名 */
-function resolveForChat() {
+/**
+ * 聊天时用：拿到可直接请求的供应商配置 + 模型名。
+ * 角色单独指定过模型就优先用它，否则跟随全局默认。
+ * @param {{model_id?: string|null}|null} [character]
+ */
+function resolveForChat(character) {
+  if (character && character.model_id) {
+    const [pid, ...rest] = String(character.model_id).split('::');
+    const model = rest.join('::');
+    const row = raw(Number(pid));
+    if (row && model) {
+      const config = configOf(row);
+      // 供应商被删了或没填 Key 就自动退回全局默认，不让聊天直接卡住
+      if (config.type !== 'openai' || config.apiKey) {
+        return { config, model, boundToCharacter: true };
+      }
+    }
+  }
+
   const cur = current();
   if (!cur) return null;
   const row = raw(cur.providerId);
@@ -264,7 +281,7 @@ function resolveForChat() {
   if (config.type === 'openai' && !config.apiKey) return null;
   const model = cur.model || parseModels(row.models)[0];
   if (!model) return null;
-  return { config, model };
+  return { config, model, boundToCharacter: false };
 }
 
 /** 生图能力：取第一条可用的生图供应商 */

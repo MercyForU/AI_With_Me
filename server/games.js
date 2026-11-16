@@ -161,7 +161,7 @@ const CHOOSE_TOOL = {
  * @returns {{ move: any, talk: string, source: 'model' | 'heuristic' }}
  */
 async function decide({ character, game, state, userName, llm, providers }) {
-  const resolved = providers.resolveForChat();
+  const resolved = providers.resolveForChat(character);
 
   // 五子棋先算规则兜底，模型只在没有必胜/必防时给主意
   let board = null;
@@ -248,7 +248,7 @@ async function finish({ character, game, result, note, userName, llm, providers 
     result === 'win' ? '对方赢了' : result === 'lose' ? '自己赢了' : '平局'
   }。`;
 
-  const resolved = providers.resolveForChat();
+  const resolved = providers.resolveForChat(character);
   let line = '';
   if (resolved) {
     try {

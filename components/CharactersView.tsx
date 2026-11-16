@@ -48,6 +48,7 @@ export default function CharactersView() {
     addMemory,
     removeMemory,
     currentModelOption,
+    modelOptionFor,
     openSettings,
     openMemoryPanel,
     memoryStats,
@@ -206,7 +207,7 @@ export default function CharactersView() {
                   </div>
                 </div>
                 <div className="mt-3 flex flex-wrap gap-1.5">
-                  <span className="chip">{currentModelOption?.name || '未配置模型'}</span>
+                  <span className="chip">{modelOptionFor(c.id)?.name || '未配置模型'}</span>
                   <span className="chip">记忆 {mem}</span>
                   <span className="chip">Lv.{c.relationship_level} 关系</span>
                 </div>
@@ -273,7 +274,12 @@ export default function CharactersView() {
                   <Row label="手记" value={`${memList.length} 条`} />
                   <Row label="关系阶段" value={`Lv.${current.relationship_level}`} />
                   <Row label="共同经历" value={`${msgList.length} 条对话 · ${gameList.length} 局游戏`} />
-                  <Row label="当前模型" value={currentModelOption?.name || '未配置'} />
+                  <Row
+                    label="当前模型"
+                    value={`${modelOptionFor(current.id)?.name || '未配置'}${
+                      current.model_id ? ' · 单独指定' : ''
+                    }`}
+                  />
                   <Row label="最近互动" value={lastActive(msgList)} />
                 </Section>
 
@@ -285,11 +291,12 @@ export default function CharactersView() {
                     </button>
                   }
                 >
-                  <Row label="当前使用" value={currentModelOption?.name || '未配置'} />
-                  <Row label="供应商" value={currentModelOption?.providerLabel || '—'} />
+                  <Row label="当前使用" value={modelOptionFor(current.id)?.name || '未配置'} />
+                  <Row label="供应商" value={modelOptionFor(current.id)?.providerLabel || '—'} />
+                  <Row label="模式" value={current.model_id ? '这个角色单独指定' : '跟随默认模型'} />
                   <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-fg-dimmer">
                     <IconSparkle size={12} className="mt-0.5 shrink-0 text-brand-soft" />
-                    模型是全局设置，在聊天窗口顶部可随时切换；切换不影响人格与记忆。
+                    每个角色可以有自己的模型，在聊天窗口顶部切换只影响当前角色；切换不影响人格与记忆。
                   </p>
                 </Section>
 

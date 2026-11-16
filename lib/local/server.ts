@@ -96,7 +96,23 @@ async function providerConfig(id: number) {
   };
 }
 
-async function resolveChatProvider() {
+async function resolveChatProvider(character?: { model_id?: string | null } | null) {
+  // 角色单独指定过模型就优先
+  if (character?.model_id) {
+    const [pid, ...rest] = String(character.model_id).split('::');
+    const model = rest.join('::');
+    const row = await rawProvider(Number(pid));
+    if (row && model) {
+      const cfg = {
+        type: (row.type === 'ollama' ? 'ollama' : 'openai') as 'openai' | 'ollama',
+        baseUrl: row.base_url,
+        apiKey: row.api_key,
+        supportsTools: !!row.supports_tools,
+      };
+      if (cfg.type !== 'openai' || cfg.apiKey) return { config: cfg, model, boundToCharacter: true };
+    }
+  }
+
   const cur = await currentModel();
   if (!cur) return null;
   const config = await providerConfig(cur.providerId);
@@ -607,6 +623,23 @@ export async function handle(
     });
   }
 
+  // 给单个角色指定模型（不动全局默认）
+  m = path.match(/^\/api\/characters\/(\d+)\/model$/);
+  if (m && method === 'POST') {
+    const id = Number(m[1]);
+    if (!(await getCharacter(id))) return fail(404, '角色不存在');
+    const pid = Number(body.providerId) || 0;
+    const model = str(body.model, 200);
+    const binding = pid && model ? `${pid}::${model}` : null;
+    await run('UPDATE characters SET model_id = ?, model_label = ?, updated_at = ? WHERE id = ?', [
+      binding,
+      binding ? model : null,
+      now(),
+      id,
+    ]);
+    return ok({ character: await getCharacter(id) });
+  }
+
   m = path.match(/^\/api\/characters\/(\d+)\/messages$/);
   if (m && method === 'POST') {
     const id = Number(m[1]);
@@ -678,9 +711,18 @@ export async function handle(
         'INSERT INTO game_records (character_id, game_key, result, summary, created_at) VALUES (?, ?, ?, ?, ?)',
         [id, game, result, factual, now()],
       );
+      // 结果提示：角色是 system（不进上下文、不被切块），kind 是 game（渲染成居中提示条）
+      const label = game === 'gomoku' ? '五子棋' : '石头剪刀布';
+      const resultText = result === 'win' ? '你赢了' : result === 'lose' ? `${c.name}赢了` : '平局';
+      const marker = await insertMessage(
+        id,
+        'system',
+        `${label} · ${resultText}${note ? ` · ${note}` : ''}`,
+        'game',
+      );
       const message = await insertMessage(id, 'assistant', line, 'text');
       await memory.insertChunk(id, factual, { source: 'game' }).catch(() => {});
-      return ok({ line, summary: factual, message });
+      return ok({ line, summary: factual, message, marker });
     } catch (e) {
       return fail(502, (e as Error).message || '总结失败');
     }
@@ -790,7 +832,7 @@ export async function runChat(
     return;
   }
 
-  const resolved = await resolveChatProvider();
+  const resolved = await resolveChatProvider(c);
   if (!resolved) {
     handlers.onError?.('还没有可用的模型，请先在设置里添加供应商并选择模型');
     return;

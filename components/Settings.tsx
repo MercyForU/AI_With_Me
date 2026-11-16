@@ -289,12 +289,18 @@ export default function Settings() {
               <p className="min-w-0 flex-1 truncate text-[11.5px] text-fg">
                 当前使用 <span className="font-medium">{current.providerLabel}</span> · {current.model}
               </p>
-              <span className="shrink-0 text-[10px] text-fg-dimmer">在聊天窗口切换</span>
+              <span className="shrink-0 text-[10px] text-fg-dimmer">默认模型</span>
             </div>
           ) : kindTab === 'chat' ? (
             <div className="mb-2 rounded-xl border border-warn/30 bg-warn/[0.07] px-3 py-2 text-[11.5px] text-fg-dim">
               还没有可用的模型。添加一个供应商后，聊天才能用。
             </div>
+          ) : null}
+
+          {kindTab === 'chat' ? (
+            <p className="mb-2 text-[10.5px] leading-relaxed text-fg-dimmer">
+              这里选的是**默认模型**。在聊天窗口顶部选模型只影响当前角色，不会改这里的默认值。
+            </p>
           ) : null}
 
           <div className="space-y-2">

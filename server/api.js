@@ -818,6 +818,24 @@ async function handle(req, res, url) {
     return json(res, 200, { ok: true });
   }
 
+  // 给单个角色指定模型（不动全局默认）
+  match = m(/^\/api\/characters\/(\d+)\/model$/);
+  if (match && method === 'POST') {
+    const id = Number(match[1]);
+    if (!getCharacter(id)) return json(res, 404, { error: '角色不存在' });
+    const body = await readBody(req);
+    const pid = Number(body.providerId) || 0;
+    const model = str(body.model, 200);
+    const binding = pid && model ? `${pid}::${model}` : null;
+    db.prepare('UPDATE characters SET model_id = ?, model_label = ?, updated_at = ? WHERE id = ?').run(
+      binding,
+      binding ? model : null,
+      now(),
+      id,
+    );
+    return json(res, 200, { character: getCharacter(id) });
+  }
+
   // 单独写一条消息（防抖时先把每条都落库上屏，再统一生成回复）
   match = m(/^\/api\/characters\/(\d+)\/messages$/);
   if (match && method === 'POST') {
@@ -882,12 +900,21 @@ async function handle(req, res, url) {
         factual,
         now(),
       );
+      // 结果提示：角色是 system（不进上下文、不被切块），kind 是 game（渲染成居中提示条）
+      const label = game === 'gomoku' ? '五子棋' : '石头剪刀布';
+      const resultText = result === 'win' ? '你赢了' : result === 'lose' ? `${c.name}赢了` : '平局';
+      const marker = insertMessage(
+        id,
+        'system',
+        `${label} · ${resultText}${note ? ` · ${note}` : ''}`,
+        'game',
+      );
       const message = insertMessage(id, 'assistant', line, 'text');
       // 这一局进记忆，之后她会记得
       await memory.insertChunk(id, factual, { source: 'game' }).catch((e) => {
         console.warn('[game] 记进记忆失败：', e.message);
       });
-      return json(res, 200, { line, summary: factual, message });
+      return json(res, 200, { line, summary: factual, message, marker });
     } catch (e) {
       return json(res, 502, { error: e.message || '总结失败' });
     }
@@ -918,7 +945,7 @@ async function handle(req, res, url) {
     if (!c) return json(res, 404, { error: '角色不存在' });
     try {
       const recent = listMessages(id, 6);
-      const resolved = providers.resolveForChat();
+      const resolved = providers.resolveForChat(c);
       if (!resolved) throw new Error('还没有配置可用的模型供应商');
       const text = await llm.completeOnce({
         provider: resolved.config,
@@ -983,7 +1010,8 @@ async function handle(req, res, url) {
     if (!c) return json(res, 404, { error: '角色不存在' });
     if (persistUser && !input) return json(res, 400, { error: '内容为空' });
 
-    const resolved = providers.resolveForChat();
+    // 角色单独指定过模型就用它，否则跟随全局默认
+    const resolved = providers.resolveForChat(c);
     if (!resolved) {
       return json(res, 400, { error: '还没有可用的模型，请先在设置里添加供应商并选择模型' });
     }

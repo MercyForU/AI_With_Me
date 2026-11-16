@@ -110,6 +110,10 @@ export type AppContextValue = {
   saveAvatar: (avatar: string) => Promise<void>;
 
   setCurrentModel: (providerId: number, model: string) => Promise<void>;
+  /** 给单个角色指定模型；传空表示跟随默认 */
+  setCharacterModel: (characterId: number, providerId: number | null, model: string | null) => Promise<void>;
+  /** 某个角色实际生效的模型（自己没有就用默认） */
+  modelOptionFor: (characterId: number | null) => ModelOption | null;
   createProvider: (input: {
     label: string;
     kind?: string;
@@ -1085,6 +1089,44 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     [active, loadCharacterData, notify, refresh],
   );
 
+  const modelOptionFor = useCallback(
+    (characterId: number | null): ModelOption | null => {
+      if (!characterId) return currentModelOption;
+      const c = characters.find((x) => x.id === characterId);
+      if (!c?.model_id) return currentModelOption;
+      const [pid, ...rest] = c.model_id.split('::');
+      const id = rest.join('::');
+      const found = models.find((m) => m.providerId === Number(pid) && m.id === id);
+      if (found) return found;
+      // 供应商或模型已经不在列表里，也照实显示绑定值，别让人以为跟了全局
+      return {
+        key: c.model_id,
+        providerId: Number(pid),
+        providerLabel: '已移除的供应商',
+        providerType: 'openai',
+        id,
+        name: id,
+      };
+    },
+    [characters, currentModelOption, models],
+  );
+
+  const setCharacterModel = useCallback(
+    async (characterId: number, providerId: number | null, model: string | null) => {
+      try {
+        const r = await api<{ character: Character }>(`/api/characters/${characterId}/model`, {
+          method: 'POST',
+          body: { providerId, model },
+        });
+        setCharacters((prev) => prev.map((c) => (c.id === characterId ? { ...c, ...r.character } : c)));
+        notify(model ? '这个角色已改用指定模型' : '已改回跟随默认模型');
+      } catch (e) {
+        notify(errorMessage(e, '切换模型失败'), 'err');
+      }
+    },
+    [notify],
+  );
+
   const value: AppContextValue = {
     ready,
     needsSetup,
@@ -1131,6 +1173,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     saveName,
     saveAvatar,
     setCurrentModel,
+    setCharacterModel,
+    modelOptionFor,
     createProvider,
     updateProvider,
     deleteProvider,

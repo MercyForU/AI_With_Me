@@ -64,6 +64,8 @@ export default function ChatView() {
     loadingChar,
     currentModelOption,
     setCurrentModel,
+    setCharacterModel,
+    modelOptionFor,
     openSettings,
     user,
     memoryStats,
@@ -85,6 +87,7 @@ export default function ChatView() {
   const scrollerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
+  const activeModel = modelOptionFor(activeId);
   const list = messages[activeId ?? -1] ?? [];
   const memList = memories[activeId ?? -1] ?? [];
   const gameList = games[activeId ?? -1] ?? [];
@@ -281,7 +284,7 @@ export default function ChatView() {
                   className="inline-flex min-w-0 items-center gap-1 rounded-full border border-line bg-tint/[0.05] px-2 py-[2px] text-[11px] text-fg-dim transition hover:border-line-strong hover:text-fg"
                 >
                   <span className="max-w-[150px] truncate">
-                    {currentModelOption ? currentModelOption.name : '未配置模型'}
+                    {activeModel ? activeModel.name : '未配置模型'}
                   </span>
                   <span className="shrink-0 opacity-70">▾</span>
                 </button>
@@ -328,6 +331,18 @@ export default function ChatView() {
                     </div>
                   ) : null}
                   <div className="max-h-[300px] overflow-y-auto p-1.5">
+                    {active?.model_id ? (
+                      <button
+                        onClick={() => {
+                          setModelMenuOpen(false);
+                          if (activeId) void setCharacterModel(activeId, null, null);
+                        }}
+                        className="mb-1 flex w-full items-center gap-1.5 rounded-lg border border-dashed border-line px-2 py-1.5 text-left text-[11px] text-fg-dim transition hover:bg-tint/5"
+                      >
+                        <IconRefresh size={11} />
+                        跟随默认（{currentModelOption?.name || '未设置'}）
+                      </button>
+                    ) : null}
                     {models.length === 0 ? (
                       <div className="p-2">
                         <p className="text-[11.5px] leading-relaxed text-fg-dim">还没有可用模型。</p>
@@ -348,13 +363,14 @@ export default function ChatView() {
                         <div key={label} className="mb-1">
                           <p className="px-2 py-1 text-[10px] uppercase tracking-wider text-fg-dimmer">{label}</p>
                           {list.map((m) => {
-                            const on = currentModelOption?.key === m.key;
+                            const on = activeModel?.key === m.key;
                             return (
                               <button
                                 key={m.key}
                                 onClick={() => {
                                   setModelMenuOpen(false);
-                                  void setCurrentModel(m.providerId, m.id);
+                                  if (!activeId) return;
+                                  void setCharacterModel(activeId, m.providerId, m.id);
                                 }}
                                 className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12.5px] transition ${
                                   on ? 'bg-brand/10 text-brand-soft' : 'text-fg hover:bg-tint/5'
@@ -511,7 +527,7 @@ export default function ChatView() {
 
           {/* 输入区 */}
           <div className="shrink-0 border-t border-line bg-surface/60 px-3 py-3 lg:px-6 lg:py-4">
-            {!currentModelOption ? (
+            {!activeModel ? (
               <div className="mx-auto mb-2 flex w-full max-w-[860px] items-center gap-2 rounded-xl border border-warn/30 bg-warn/[0.08] px-3 py-2 2xl:max-w-[960px]">
                 <p className="min-w-0 flex-1 text-[11.5px] leading-snug text-fg-dim">
                   还没有可用的模型，配置供应商之后才能对话
