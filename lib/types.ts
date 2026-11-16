@@ -125,6 +125,10 @@ export type MemoryStats = {
 export type MemoryChunkItem = {
   id: string;
   content: string;
+  /** 归档前的对话原文（总结过才有，手动写的没有） */
+  raw?: string | null;
+  /** chat = 自动归档，manual = 用户写的，model = 模型写的 */
+  source?: 'chat' | 'manual' | 'model' | string;
   createdAt?: string;
   tokens?: number;
   hasVector?: boolean;

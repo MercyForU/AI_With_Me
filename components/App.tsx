@@ -9,6 +9,7 @@ import ChatView from './ChatView';
 import CharactersView from './CharactersView';
 import CircleView from './CircleView';
 import Settings from './Settings';
+import MemoryPanel from './MemoryPanel';
 import { Toasts } from './ui';
 import { IconChat, IconGlobe, IconSettings, IconUser } from './icons';
 
@@ -171,6 +172,7 @@ export function Shell() {
       </nav>
 
       <Settings />
+      <MemoryPanel />
     </div>
   );
 }

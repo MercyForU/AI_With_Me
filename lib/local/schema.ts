@@ -99,7 +99,9 @@ CREATE TABLE IF NOT EXISTS memory_chunks (
   vector       TEXT,
   embedded_at  TEXT,
   created_at   TEXT NOT NULL,
-  deleted_at   TEXT
+  deleted_at   TEXT,
+  raw_content  TEXT,
+  source       TEXT NOT NULL DEFAULT 'chat'
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_char ON messages (character_id, created_at);
@@ -124,6 +126,8 @@ export async function initSchema(): Promise<void> {
     await ensureColumn('providers', 'supports_vision', 'supports_vision INTEGER NOT NULL DEFAULT 0');
     await ensureColumn('providers', 'supports_tools', 'supports_tools INTEGER NOT NULL DEFAULT 0');
     await ensureColumn('memory_chunks', 'embed_text', 'embed_text TEXT');
+    await ensureColumn('memory_chunks', 'raw_content', 'raw_content TEXT');
+    await ensureColumn('memory_chunks', 'source', "source TEXT NOT NULL DEFAULT 'chat'");
   })();
   return ready;
 }

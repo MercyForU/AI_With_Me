@@ -5,15 +5,15 @@ import { assetUrl } from '@/lib/base';
 import { api, errorMessage } from '@/lib/api';
 import { isNativeApp } from '@/lib/base';
 import { useApp } from '@/lib/store';
-import type { MemoryChunkItem, MemoryStats, Provider, ProviderKind } from '@/lib/types';
+import type { MemoryStats, Provider, ProviderKind } from '@/lib/types';
 import { ThemeSwitch } from './ThemeProvider';
 import { Field, Modal, Spinner } from './ui';
 import {
   IconCheck,
   IconDownload,
-  IconEdit,
   IconPlus,
   IconServer,
+  IconMemory,
   IconSparkle,
   IconTrash,
   IconUpload,
@@ -63,8 +63,7 @@ export default function Settings() {
     embedding,
     saveEmbedSource,
     memoryStats,
-    listMemoryChunks,
-    updateMemoryChunk,
+    openMemoryPanel,
     rebuild,
     startRebuild,
     createProvider,
@@ -87,61 +86,6 @@ export default function Settings() {
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const [kindTab, setKindTab] = useState<'chat' | 'embedding' | 'image' | 'tts'>('chat');
   const [mem, setMem] = useState<MemoryStats | null>(null);
-  const [probeQ, setProbeQ] = useState('');
-  const [chunks, setChunks] = useState<MemoryChunkItem[]>([]);
-  const [chunkTotal, setChunkTotal] = useState(0);
-  const [chunkMode, setChunkMode] = useState<'recent' | 'recall'>('recent');
-  const [chunksLoading, setChunksLoading] = useState(false);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editDraft, setEditDraft] = useState('');
-  const [savingChunk, setSavingChunk] = useState(false);
-
-  useEffect(() => {
-    if (!settingsOpen) return;
-    setName(user.name);
-    setForm(null);
-    setResults({});
-    setProbeQ('');
-    setEditingId(null);
-  }, [settingsOpen, user.name]);
-
-  /** 拉记忆块：q 有值时是「召回看看」，否则按时间倒序分页 */
-  async function loadChunks(q: string, offset = 0) {
-    if (!active) return;
-    setChunksLoading(true);
-    const r = await listMemoryChunks(active.id, { q: q.trim(), limit: 20, offset });
-    setChunks((prev) => (offset > 0 ? [...prev, ...r.items] : r.items));
-    setChunkTotal(r.total);
-    setChunkMode(r.mode === 'recall' ? 'recall' : 'recent');
-    setEditingId(null);
-    setChunksLoading(false);
-  }
-
-  async function saveChunk(id: string) {
-    const text = editDraft.trim();
-    if (!text) return;
-    setSavingChunk(true);
-    const done = await updateMemoryChunk(id, text);
-    setSavingChunk(false);
-    if (!done) return;
-    setChunks((prev) => prev.map((c) => (c.id === id ? { ...c, content: text } : c)));
-    setEditingId(null);
-    if (active) {
-      const r = await memoryStats(active.id);
-      if (r) setMem(r);
-    }
-  }
-
-  useEffect(() => {
-    if (!settingsOpen || !active) {
-      setChunks([]);
-      setChunkTotal(0);
-      return;
-    }
-    void loadChunks('');
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settingsOpen, active?.id]);
-
   useEffect(() => {
     if (!settingsOpen || !active) return;
     let alive = true;
@@ -455,8 +399,8 @@ export default function Settings() {
               </span>
             </div>
             <p className="mt-1.5 text-[10.5px] leading-relaxed text-fg-dimmer">
-              记忆常驻开启：滑出最近 {mem?.window ?? 16} 条窗口的对话会自动压成块，
-              攒够 6 条切一次。当前角色：{active?.name || '未选择'}。
+              记忆常驻开启：滑出最近 {mem?.window ?? 16} 条窗口的对话，攒够 6 条会先用当前模型
+              总结成记忆再入库。当前角色：{active?.name || '未选择'}。
             </p>
 
             {rebuild?.status === 'running' ? (
@@ -504,110 +448,22 @@ export default function Settings() {
               </button>
             ) : null}
 
-            <div className="mt-2 flex gap-1.5">
-              <input
-                className="field py-1.5 text-[12px]"
-                value={probeQ}
-                onChange={(e) => setProbeQ(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && active) void loadChunks(probeQ);
-                }}
-                placeholder="搜一句试试能召回什么，例如「面试」"
-              />
-              <button
-                onClick={() => void loadChunks(probeQ)}
-                disabled={!active || chunksLoading}
-                className="btn-ghost shrink-0 px-3 text-[11.5px]"
-              >
-                {probeQ.trim() ? '召回' : '刷新'}
-              </button>
-            </div>
-
-            <div className="mt-2 flex items-center justify-between text-[10.5px] text-fg-dimmer">
-              <span>
-                {chunkMode === 'recall'
-                  ? `召回 ${chunks.length} 条`
-                  : `最近 ${chunks.length} 条 · 共 ${chunkTotal} 条`}
+            <button
+              onClick={() => openMemoryPanel(active?.id)}
+              disabled={!active}
+              className="mt-2.5 flex w-full items-center gap-2.5 rounded-xl border border-line bg-tint/[0.03] px-3 py-2.5 text-left transition hover:border-line-strong disabled:opacity-50"
+            >
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand/[0.12] text-brand-soft">
+                <IconMemory size={15} />
               </span>
-              <span>每条都可以直接改</span>
-            </div>
-
-            <div className="mt-1.5 max-h-[260px] space-y-1.5 overflow-y-auto pr-1">
-              {chunksLoading ? (
-                <p className="py-3 text-center text-[11px] text-fg-dimmer">读取中…</p>
-              ) : chunks.length === 0 ? (
-                <p className="py-3 text-center text-[11px] leading-relaxed text-fg-dimmer">
-                  {chunkMode === 'recall'
-                    ? '这句话没有召回任何记忆，换个说法试试'
-                    : '还没有归档的记忆。聊够 20 多条之后，滑出窗口的对话会自动存成记忆。'}
-                </p>
-              ) : (
-                chunks.map((c) =>
-                  editingId === c.id ? (
-                    <div key={c.id} className="rounded-lg border border-brand/30 bg-brand/[0.05] p-2">
-                      <textarea
-                        autoFocus
-                        value={editDraft}
-                        maxLength={2000}
-                        onChange={(e) => setEditDraft(e.target.value)}
-                        className="field min-h-[84px] resize-y text-[11.5px] leading-relaxed"
-                      />
-                      <div className="mt-1.5 flex items-center gap-1.5">
-                        <button
-                          onClick={() => void saveChunk(c.id)}
-                          disabled={savingChunk || !editDraft.trim()}
-                          className="rounded-lg bg-brand/20 px-2.5 py-1 text-[11px] font-medium text-brand-soft disabled:opacity-40"
-                        >
-                          {savingChunk ? '保存中…' : '保存'}
-                        </button>
-                        <button
-                          onClick={() => setEditingId(null)}
-                          className="rounded-lg border border-line px-2.5 py-1 text-[11px] text-fg-dim"
-                        >
-                          取消
-                        </button>
-                        <span className="ml-auto tabular-nums text-[10px] text-fg-dimmer">
-                          {editDraft.length}/2000
-                        </span>
-                      </div>
-                    </div>
-                  ) : (
-                    <div
-                      key={c.id}
-                      className="group flex items-start gap-2 rounded-lg border border-line bg-tint/[0.02] px-2.5 py-2"
-                    >
-                      <p className="line-clamp-4 min-w-0 flex-1 whitespace-pre-wrap break-words text-[11px] leading-relaxed text-fg-dim">
-                        {c.content}
-                      </p>
-                      <button
-                        onClick={() => {
-                          setEditingId(c.id);
-                          setEditDraft(c.content);
-                        }}
-                        className="shrink-0 rounded-md p-1 text-fg-dimmer transition hover:text-brand-soft"
-                        title="编辑这条记忆"
-                      >
-                        <IconEdit size={13} />
-                      </button>
-                    </div>
-                  ),
-                )
-              )}
-            </div>
-
-            {chunkMode === 'recent' && chunkTotal > chunks.length ? (
-              <button
-                onClick={() => void loadChunks('', chunks.length)}
-                disabled={chunksLoading}
-                className="mt-2 text-[10.5px] text-fg-dim transition hover:text-fg disabled:opacity-50"
-              >
-                加载更多（还有 {chunkTotal - chunks.length} 条）
-              </button>
-            ) : null}
-
-            <p className="mt-2 text-[10px] leading-relaxed text-fg-dimmer">
-              改完会重新算向量，之后的对话就按新内容召回；改坏了再改回来就行，不会动原始聊天记录。
-            </p>
+              <span className="min-w-0 flex-1">
+                <span className="block text-[12.5px] font-medium text-fg">打开记忆管理</span>
+                <span className="mt-0.5 block text-[10.5px] text-fg-dimmer">
+                  查看原文 · 召回测试 · 逐条改写或删除
+                </span>
+              </span>
+              <span className="shrink-0 text-fg-dimmer">›</span>
+            </button>
           </div>
         </section>
 

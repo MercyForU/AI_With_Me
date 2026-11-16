@@ -116,9 +116,10 @@ async function recall(characterId, query, opts = {}) {
   kwHits.forEach((h, i) => add(h, i, 'k'));
 
   // bge-small-zh 在短中文上的绝对相似度普遍偏低（0.3–0.6），
-  // 所以用「绝对下限 + 相对头名」双重过滤，避免沾边就注入
-  const MIN_COS = 0.38;
-  const REL_CUT = 0.12;
+  // 所以用「绝对下限 + 相对头名」双重过滤，避免沾边就注入。
+  // 用户明确在问「以前/上次」时放宽阈值，宁可多给几条也别漏。
+  const MIN_COS = opts.relax ? 0.3 : 0.38;
+  const REL_CUT = opts.relax ? 0.2 : 0.12;
   const bestVec = Math.max(0, ...vecHits.map((h) => h.score));
   const items = [...merged.values()]
     .filter(
@@ -140,18 +141,67 @@ async function recall(characterId, query, opts = {}) {
   };
 }
 
-/** 按 token 预算裁剪，供注入 system prompt */
-async function recallForPrompt(characterId, query, budgetTokens = 600) {
-  const { items, debug } = await recall(characterId, query, { topK: 8 });
+/** 最近的几条记忆：召回不够时用来兜底（用户说「前几天」但向量没命中时特别有用） */
+function recentChunks(characterId, limit = 5, exclude = []) {
+  const skip = new Set(exclude);
+  const rows = db
+    .prepare(
+      `SELECT id, content, created_at FROM memory_chunks
+        WHERE character_id = ? AND deleted_at IS NULL
+        ORDER BY created_at DESC, id DESC LIMIT ?`,
+    )
+    .all(characterId, limit + skip.size);
+  return rows
+    .filter((r) => !skip.has(r.id))
+    .slice(0, limit)
+    .map((r) => ({ id: r.id, content: r.content, createdAt: r.created_at }));
+}
+
+const MIN_ITEMS = 5;
+const MAX_ITEMS = 10;
+
+// 用户明确在翻旧账/回忆时，说明这句话的「相关」不靠字面相似度，
+// 而是靠时间和事件——这时放宽阈值、补最近记忆，比严格过滤更有用。
+const RECALL_WORDS =
+  /(之前|以前|上次|上回|上一回|那次|那天|当时|当年|昨天|前天|前几天|前些天|前阵子|上周|上个星期|上个月|去年|小时候|记得|还记得|回忆|想起来|想起|说过|答应过|提过|刚刚|刚才|最近|这些天|一直以来)/;
+
+function wantsRecall(text) {
+  return RECALL_WORDS.test(String(text || ''));
+}
+
+/**
+ * 按 token 预算裁剪，供注入 system prompt。
+ * 目标：最相关的 5–10 条，不把整个库都塞进去。
+ */
+async function recallForPrompt(characterId, query, budgetTokens = 900, opts = {}) {
+  const { items, debug } = await recall(characterId, query, {
+    topK: MAX_ITEMS,
+    relax: Boolean(opts.relax),
+  });
+
   const picked = [];
   let used = 0;
   for (const item of items) {
     const cost = countTokens(item.content);
-    if (used + cost > budgetTokens) break;
+    // 预算不够时，至少保证 5 条
+    if (used + cost > budgetTokens && picked.length >= MIN_ITEMS) break;
+    if (picked.length >= MAX_ITEMS) break;
     picked.push(item);
     used += cost;
   }
+
+  // 明确在回忆往事却没凑够条数：拿最近的记忆补上
+  if (opts.relax && picked.length < MIN_ITEMS) {
+    const extra = recentChunks(characterId, MIN_ITEMS - picked.length, picked.map((p) => p.id));
+    for (const e of extra) {
+      const cost = countTokens(e.content);
+      if (used + cost > budgetTokens * 1.4) break;
+      picked.push(e);
+      used += cost;
+    }
+  }
+
   return { items: picked, tokens: used, debug };
 }
 
-module.exports = { recall, recallForPrompt, resetEmbedFailure };
+module.exports = { recall, recallForPrompt, recentChunks, wantsRecall, resetEmbedFailure };

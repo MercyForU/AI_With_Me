@@ -17,7 +17,14 @@ export type LlmProvider = {
   supportsTools?: boolean;
 };
 
-export type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string };
+export type ChatMessage = {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content: string;
+  /** 助手发起工具调用时带上，OpenAI 兼容格式 */
+  tool_calls?: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>;
+  /** role = tool 时，对应哪一次调用 */
+  tool_call_id?: string;
+};
 
 function trimBase(url: string) {
   return String(url || '').replace(/\/+$/, '');

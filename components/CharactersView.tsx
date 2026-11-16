@@ -17,8 +17,6 @@ import {
 
 const EMOJIS = ['🌙', '🔥', '🌿', '🐚', '☕️', '🦊', '🌊', '🎧', '📖', '🕯️', '🍂', '🪐'];
 
-const MEMORY_CAP = 50;
-
 const EMPTY_DRAFT: CharacterDraft = {
   name: '',
   emoji: '🌙',
@@ -51,6 +49,8 @@ export default function CharactersView() {
     removeMemory,
     currentModelOption,
     openSettings,
+    openMemoryPanel,
+    memoryStats,
     uploadAvatar,
   } = useApp();
 
@@ -58,6 +58,7 @@ export default function CharactersView() {
   const [editing, setEditing] = useState<Character | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<Character | null>(null);
   const [mobileDetail, setMobileDetail] = useState(false);
+  const [archived, setArchived] = useState(0);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const current = active;
@@ -80,7 +81,21 @@ export default function CharactersView() {
     setDirty(false);
   }, [current?.id, current?.personality, current?.tagline, current?.scenario, current]);
 
-  const memoryPercent = Math.min(100, Math.round((memList.length / MEMORY_CAP) * 100));
+  // 归档块数：不设上限，只显示真实条数
+  useEffect(() => {
+    if (!current?.id) {
+      setArchived(0);
+      return;
+    }
+    let alive = true;
+    void memoryStats(current.id).then((r) => {
+      if (alive && r) setArchived(r.chunks);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [current?.id, memoryStats]);
+
 
   async function handleImport(file: File) {
     const text = await file.text();
@@ -254,16 +269,8 @@ export default function CharactersView() {
                   title="数据状态"
                   extra={<span className="chip">实时</span>}
                 >
-                  <Row label="记忆容量" value={`${memList.length} / ${MEMORY_CAP} 条`} />
-                  <div className="mb-2 mt-1 h-2 overflow-hidden rounded-full bg-tint/[0.08]">
-                    <div
-                      className="h-full rounded-full transition-all"
-                      style={{
-                        width: `${Math.max(memoryPercent, 3)}%`,
-                        background: accentGradient(current.accent),
-                      }}
-                    />
-                  </div>
+                  <Row label="归档记忆" value={`${archived} 块`} />
+                  <Row label="手记" value={`${memList.length} 条`} />
                   <Row label="关系阶段" value={`Lv.${current.relationship_level}`} />
                   <Row label="共同经历" value={`${msgList.length} 条对话 · ${gameList.length} 局游戏`} />
                   <Row label="当前模型" value={currentModelOption?.name || '未配置'} />
@@ -350,9 +357,34 @@ export default function CharactersView() {
 
                 <Section
                   title="记忆管理"
-                  extra={<span className="text-[10.5px] text-fg-dimmer">可查看 / 添加 / 删除</span>}
+                  extra={
+                    <button
+                      onClick={() => openMemoryPanel(current.id)}
+                      className="text-[11.5px] font-medium text-brand-soft"
+                    >
+                      打开面板
+                    </button>
+                  }
                 >
-                  <div className="mb-2 flex gap-1.5">
+                  <button
+                    onClick={() => openMemoryPanel(current.id)}
+                    className="flex w-full items-center gap-3 rounded-xl border border-line bg-tint/[0.02] px-3 py-3 text-left transition hover:border-line-strong"
+                  >
+                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-brand/[0.12] text-brand-soft">
+                      <IconMemory size={16} />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-[13px] font-medium text-fg">
+                        归档 {archived} 块 · 手记 {memList.length} 条
+                      </span>
+                      <span className="mt-0.5 block text-[11px] text-fg-dimmer">
+                        查看原文、召回测试、逐条改写或删除
+                      </span>
+                    </span>
+                    <span className="shrink-0 text-fg-dimmer">›</span>
+                  </button>
+
+                  <div className="mt-2.5 flex gap-1.5">
                     <input
                       value={memoryDraft}
                       onChange={(e) => setMemoryDraft(e.target.value)}
@@ -362,7 +394,7 @@ export default function CharactersView() {
                           setMemoryDraft('');
                         }
                       }}
-                      placeholder="记一条她该记住的事，例如「他下周三有面试」"
+                      placeholder="记一条手记，例如「他下周三有面试」"
                       className="field flex-1 py-2 text-[12.5px]"
                     />
                     <button
@@ -372,18 +404,15 @@ export default function CharactersView() {
                       }}
                       disabled={!memoryDraft.trim()}
                       className="shrink-0 rounded-xl border border-line px-3 text-fg-dim transition hover:text-fg disabled:opacity-40"
+                      title="添加到手记"
                     >
                       <IconPlus size={15} />
                     </button>
                   </div>
 
-                  <div className="max-h-[240px] space-y-1.5 overflow-y-auto pr-1">
-                    {memList.length === 0 ? (
-                      <p className="py-4 text-center text-[12px] text-fg-dimmer">
-                        还没有长期记忆
-                      </p>
-                    ) : (
-                      memList.map((m) => (
+                  {memList.length > 0 ? (
+                    <div className="mt-2 max-h-[132px] space-y-1.5 overflow-y-auto pr-1">
+                      {memList.slice(0, 6).map((m) => (
                         <div
                           key={m.id}
                           className="group flex items-start gap-2 rounded-lg border border-line bg-tint/[0.02] px-2.5 py-2"
@@ -393,14 +422,14 @@ export default function CharactersView() {
                           <button
                             onClick={() => void removeMemory(m.id, current.id)}
                             className="shrink-0 text-fg-dimmer opacity-0 transition group-hover:opacity-100"
-                            title="删除这条记忆"
+                            title="删除这条手记"
                           >
                             <IconTrash size={13} />
                           </button>
                         </div>
-                      ))
-                    )}
-                  </div>
+                      ))}
+                    </div>
+                  ) : null}
 
                   {current.memory_note ? (
                     <div className="mt-3 rounded-lg border border-brand/20 bg-brand/[0.06] px-2.5 py-2">

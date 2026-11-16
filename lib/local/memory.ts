@@ -5,7 +5,8 @@
  * 模型加载失败时自动降级为纯关键词检索，并在设置里如实显示，不会静默失效。
  */
 import { all, run } from './sqlite';
-import { insertMessage, now, type MessageRow } from './data';
+import { currentModel, insertMessage, now, rawProvider, type MessageRow } from './data';
+import { chatOnce } from './llm';
 
 export const WINDOW = 16;
 const MAX_MSGS = 5;
@@ -65,6 +66,59 @@ async function embedTexts(texts: string[]): Promise<{ vectors: Float32Array[]; m
 
 export function embeddingState() {
   return { error: embedError, degraded: Boolean(embedError) };
+}
+
+// ---------- 归档前总结 ----------
+const SUMMARY_SYSTEM = [
+  '你在为一段陪伴式聊天整理长期记忆，供以后回忆时使用。',
+  '把下面这段对话压缩成 1-3 句中文陈述，只保留以后可能用得到的信息：',
+  '人物的近况、时间与计划、偏好与口味、承诺与约定、情绪转折、关系进展。',
+  '要求：',
+  '1. 用第三人称陈述，用户统一称「对方」，角色用自己的名字；',
+  '2. 不要写「用户说」「角色回答」这类过程描述，直接写事实；',
+  '3. 不要编造，原文没提的不要补；',
+  '4. 只输出记忆本身，不要前缀、编号、解释或引号。',
+].join('\n');
+
+async function resolveChatProvider() {
+  const cur = await currentModel();
+  if (!cur) return null;
+  const row = await rawProvider(cur.providerId);
+  if (!row) return null;
+  const config = {
+    type: (row.type === 'ollama' ? 'ollama' : 'openai') as 'openai' | 'ollama',
+    baseUrl: row.base_url,
+    apiKey: row.api_key,
+    supportsTools: !!row.supports_tools,
+  };
+  if (config.type === 'openai' && !config.apiKey) return null;
+  return { config, model: cur.model };
+}
+
+/** 把一段原文压成记忆陈述；不可用时返回 null，调用方回退原文 */
+async function summarizeChunk(raw: string, characterName: string): Promise<string | null> {
+  const text = String(raw || '').trim();
+  if (text.length < 60) return null;
+  const resolved = await resolveChatProvider();
+  if (!resolved) return null;
+  try {
+    const out = await chatOnce({
+      provider: resolved.config,
+      model: resolved.model,
+      messages: [
+        { role: 'system', content: SUMMARY_SYSTEM },
+        { role: 'user', content: `角色：${characterName || '角色'}\n\n对话原文：\n${text}` },
+      ],
+    });
+    const clean = String(out.text || '')
+      .replace(/^["'「『]|["'」』]$/g, '')
+      .replace(/^\s*[-*\d.、]+/, '')
+      .trim();
+    if (clean.length < 8 || clean.length > 600) return null;
+    return clean;
+  } catch {
+    return null;
+  }
 }
 
 // ---------- 分块 ----------
@@ -158,17 +212,34 @@ export async function ingest(characterId: number, characterName: string, force =
   if (!force && msgs.length < MIN_BATCH) return { created: 0, skipped: 0, waiting: MIN_BATCH - msgs.length };
 
   const chunks = buildChunks(msgs, characterName);
-  const { vectors, model } = await embedTexts(chunks.map((c) => c.embedText));
 
-  let created = 0;
+  // 先总结再入库：摘要当 content，原文进 raw_content；模型不可用时按原文存
+  const MAX_SUMMARIZE = 4;
+  const prepared: Array<Chunk & { raw: string | null }> = [];
+  let summarized = 0;
   for (let i = 0; i < chunks.length; i++) {
     const c = chunks[i];
+    const summary = i < MAX_SUMMARIZE ? await summarizeChunk(c.content, characterName) : null;
+    if (summary) summarized += 1;
+    prepared.push({
+      ...c,
+      content: summary || c.content,
+      embedText: summary || c.embedText,
+      raw: summary ? c.content : null,
+    });
+  }
+
+  const { vectors, model } = await embedTexts(prepared.map((c) => c.embedText));
+
+  let created = 0;
+  for (let i = 0; i < prepared.length; i++) {
+    const c = prepared[i];
     const vec = vectors[i] || null;
     const r = await run(
       `INSERT OR IGNORE INTO memory_chunks
         (id, character_id, session_id, content, embed_text, msg_from, msg_to, token_count, content_hash,
-         embed_model, embed_dim, vector, embedded_at, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         embed_model, embed_dim, vector, embedded_at, created_at, raw_content, source)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'chat')`,
       [
         uuid(),
         characterId,
@@ -184,11 +255,50 @@ export async function ingest(characterId: number, characterName: string, force =
         vec ? vecToB64(vec) : null,
         vec ? now() : null,
         now(),
+        c.raw,
       ],
     );
     created += r.changes;
   }
-  return { created, skipped: chunks.length - created, embedded: vectors.length };
+  return { created, skipped: prepared.length - created, embedded: vectors.length, summarized };
+}
+
+/** 直接写一条记忆（用户手动添加 / 模型调用 memory_write） */
+export async function insertChunk(characterId: number, content: string, opts: { source?: 'manual' | 'model' } = {}) {
+  const text = String(content || '').trim().slice(0, 2000);
+  if (!text) throw new Error('记忆内容不能为空');
+  const { vectors, model } = await embedTexts([text]);
+  const vec = vectors[0] || null;
+  const id = uuid();
+  await run(
+    `INSERT INTO memory_chunks
+      (id, character_id, session_id, content, embed_text, msg_from, msg_to, token_count, content_hash,
+       embed_model, embed_dim, vector, embedded_at, created_at, raw_content, source)
+     VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+    [
+      id,
+      characterId,
+      new Date().toISOString().slice(0, 10),
+      text,
+      text,
+      Math.max(1, Math.round(text.length / 2)),
+      `${hashText(`${text}|${id}`)}-${text.length}`,
+      vec ? model : null,
+      vec ? vec.length : null,
+      vec ? vecToB64(vec) : null,
+      vec ? now() : null,
+      now(),
+      opts.source === 'model' ? 'model' : 'manual',
+    ],
+  );
+  return { id, content: text, embedded: Boolean(vec) };
+}
+
+export async function deleteChunk(id: string) {
+  const rows = await all<{ id: string }>('SELECT id FROM memory_chunks WHERE id = ?', [id]);
+  if (!rows.length) throw new Error('这条记忆不存在了');
+  await run('DELETE FROM memory_chunks WHERE id = ?', [id]);
+  return { id, removed: 1 };
 }
 
 export async function stats(characterId?: number) {
@@ -234,11 +344,13 @@ export async function listChunks(characterId: number, limit = 20, offset = 0) {
   const rows = await all<{
     id: string;
     content: string;
+    raw_content: string | null;
+    source: string | null;
     created_at: string;
     token_count: number;
     has_vector: number;
   }>(
-    `SELECT id, content, created_at, token_count, (vector IS NOT NULL) AS has_vector
+    `SELECT id, content, raw_content, source, created_at, token_count, (vector IS NOT NULL) AS has_vector
        FROM memory_chunks
       WHERE character_id = ? AND deleted_at IS NULL
       ORDER BY created_at DESC, id DESC
@@ -249,6 +361,8 @@ export async function listChunks(characterId: number, limit = 20, offset = 0) {
     items: rows.map((r) => ({
       id: r.id,
       content: r.content,
+      raw: r.raw_content || null,
+      source: r.source || 'chat',
       createdAt: r.created_at,
       tokens: r.token_count,
       hasVector: Boolean(r.has_vector),
@@ -311,7 +425,11 @@ export type RecallHit = {
 
 type Scored = { id: string; content: string; createdAt: string; score: number };
 
-export async function recall(characterId: number, query: string, opts: { topK?: number } = {}) {
+export async function recall(
+  characterId: number,
+  query: string,
+  opts: { topK?: number; relax?: boolean } = {},
+) {
   const t0 = Date.now();
   const topK = opts.topK || 6;
   const text = String(query || '').trim();
@@ -391,25 +509,170 @@ export async function recall(characterId: number, query: string, opts: { topK?: 
   kwHits.forEach((h, i) => add(h, i, 'k'));
 
   const bestVec = Math.max(0, ...vecHits.map((h) => h.score));
+  // 回忆类提问放宽阈值：这类问题靠时间线，不靠字面相似度
+  const minCos = opts.relax ? 0.3 : MIN_COS;
+  const relCut = opts.relax ? 0.2 : REL_CUT;
   const items = [...merged.values()]
-    .filter((it) => it.keyword || (it.vec !== null && it.vec >= MIN_COS && it.vec >= bestVec - REL_CUT))
+    .filter((it) => it.keyword || (it.vec !== null && it.vec >= minCos && it.vec >= bestVec - relCut))
     .sort((a, b) => b.score - a.score)
     .slice(0, topK);
 
   return { items, debug: { vector: vecHits.length, keyword: kwHits.length, ms: Date.now() - t0, mode } };
 }
 
-export async function recallForPrompt(characterId: number, query: string, budgetTokens = 600) {
-  const { items, debug } = await recall(characterId, query, { topK: 8 });
+// 用户明确在翻旧账时放宽召回，并允许用最近记忆兜底
+const RECALL_WORDS =
+  /(之前|以前|上次|上回|上一回|那次|那天|当时|当年|昨天|前天|前几天|前些天|前阵子|上周|上个星期|上个月|去年|小时候|记得|还记得|回忆|想起来|想起|说过|答应过|提过|刚刚|刚才|最近|这些天|一直以来)/;
+
+export function wantsRecall(text: string) {
+  return RECALL_WORDS.test(String(text || ''));
+}
+
+const MIN_ITEMS = 5;
+const MAX_ITEMS = 10;
+
+export async function recallForPrompt(
+  characterId: number,
+  query: string,
+  budgetTokens = 900,
+  opts: { relax?: boolean } = {},
+) {
+  const { items, debug } = await recall(characterId, query, { topK: MAX_ITEMS, relax: opts.relax });
   const picked: RecallHit[] = [];
   let used = 0;
   for (const it of items) {
     const cost = Math.round(it.content.length / 2);
-    if (used + cost > budgetTokens) break;
+    if (used + cost > budgetTokens && picked.length >= MIN_ITEMS) break;
+    if (picked.length >= MAX_ITEMS) break;
     picked.push(it);
     used += cost;
   }
+
+  // 明确在回忆却没凑够：拿最近的记忆补上
+  if (opts.relax && picked.length < MIN_ITEMS) {
+    const have = new Set(picked.map((p) => p.id));
+    const recent = await all<{ id: string; content: string; created_at: string }>(
+      `SELECT id, content, created_at FROM memory_chunks
+        WHERE character_id = ? AND deleted_at IS NULL
+        ORDER BY created_at DESC, id DESC LIMIT ?`,
+      [characterId, MIN_ITEMS * 2],
+    );
+    for (const r of recent) {
+      if (picked.length >= MIN_ITEMS) break;
+      if (have.has(r.id)) continue;
+      picked.push({ id: r.id, content: r.content, createdAt: r.created_at, score: 0, vec: null, keyword: false });
+    }
+  }
+
   return { items: picked, tokens: used, debug };
+}
+
+// ---------- 暴露给聊天模型的记忆工具 ----------
+export const TOOLS = [
+  {
+    type: 'function',
+    function: {
+      name: 'memory_search',
+      description:
+        '翻找你们过去的记忆。当对方提到以前的事、你说不清或需要确认细节时调用。不要每句话都调。',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: '想找什么，用一句话描述' },
+        },
+        required: ['query'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'memory_write',
+      description:
+        '把值得长期记住的事写进记忆：对方的计划、重要的人和事、明确的偏好与底线、你们的约定。寒暄不要写。',
+      parameters: {
+        type: 'object',
+        properties: {
+          content: { type: 'string', description: '一条中文陈述，第三人称，用「对方」指代用户，1-2 句' },
+        },
+        required: ['content'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'memory_update',
+      description: '修正一条记错或过时的记忆。需要先用 memory_search 拿到它的 id。',
+      parameters: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: '记忆 id，来自 memory_search 结果' },
+          content: { type: 'string', description: '修正后的完整内容' },
+        },
+        required: ['id', 'content'],
+      },
+    },
+  },
+];
+
+const TOOL_NAMES = new Set(TOOLS.map((t) => t.function.name));
+
+export function isMemoryTool(name: string) {
+  return TOOL_NAMES.has(name);
+}
+
+function fmtDate(iso: string) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+function parseArgs(raw: string | Record<string, unknown>) {
+  if (!raw) return {};
+  if (typeof raw === 'object') return raw as Record<string, unknown>;
+  try {
+    return JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
+export async function runTool(name: string, rawArgs: string, characterId: number) {
+  const args = parseArgs(rawArgs);
+
+  if (name === 'memory_search') {
+    const query = String(args.query || '').trim();
+    if (!query) return { text: '没有提供要查找的内容。' };
+    const { items } = await recall(characterId, query, { topK: 6, relax: true });
+    if (!items.length) return { text: '记忆里没有和这个相关的内容。' };
+    return {
+      text: items.map((it) => `[${it.id}] ${fmtDate(it.createdAt)} ${it.content}`).join('\n'),
+      items: items.map((it) => ({ id: it.id, content: it.content })),
+    };
+  }
+
+  if (name === 'memory_write') {
+    const content = String(args.content || '').trim();
+    if (!content) return { text: '没有提供要记住的内容。' };
+    const r = await insertChunk(characterId, content, { source: 'model' });
+    return { text: `已记住（id: ${r.id}）。`, items: [{ id: r.id, content: r.content }] };
+  }
+
+  if (name === 'memory_update') {
+    const id = String(args.id || '').trim();
+    const content = String(args.content || '').trim();
+    if (!id || !content) return { text: '缺少 id 或内容。' };
+    try {
+      const r = await updateChunk(id, content);
+      return { text: `已更新（id: ${r.id}）。`, items: [{ id: r.id, content: r.content }] };
+    } catch (e) {
+      return { text: `更新失败：${(e as Error).message}` };
+    }
+  }
+
+  return { text: `不认识这个工具：${name}` };
 }
 
 export async function rememberGame(characterId: number, summary: string) {

@@ -10,6 +10,7 @@ const image = require('./image');
 const providers = require('./providers');
 const memory = require('./memory');
 const memorySearch = require('./memory/search');
+const memoryTools = require('./memory/tools');
 const embedding = require('./embedding');
 const rebuild = require('./memory/rebuild');
 const { buildSystemPrompt, buildContext, POST_SYSTEM, POST_PROMPT } = require('./prompt');
@@ -637,6 +638,26 @@ async function handle(req, res, url) {
     }
   }
 
+  if (chunkHit && method === 'DELETE') {
+    try {
+      return json(res, 200, memory.deleteChunk(chunkHit[1]));
+    } catch (e) {
+      return json(res, 400, { error: e.message });
+    }
+  }
+
+  // 手动写一条记忆（记忆管理面板里的「添加」）
+  if (path === '/api/memory/chunks' && method === 'POST') {
+    const body = await readBody(req);
+    const cid = Number(body.characterId || 0);
+    if (!cid) return json(res, 400, { error: '缺少 characterId' });
+    try {
+      return json(res, 200, await memory.insertChunk(cid, body.content, { source: 'manual' }));
+    } catch (e) {
+      return json(res, 400, { error: e.message });
+    }
+  }
+
   if (path === '/api/memory/ingest' && method === 'POST') {
     const body = await readBody(req);
     const cid = Number(body.characterId || 0);
@@ -845,35 +866,86 @@ async function handle(req, res, url) {
     send({ event: 'user', message: userMessage });
 
     try {
+      // 用户明说「以前/上次/前几天」时放宽召回：这类问题靠的是时间线，不是字面相似度
+      const relax = memorySearch.wantsRecall(input);
       let recalled = [];
       try {
-        const r = await memorySearch.recallForPrompt(id, input, 600);
+        const r = await memorySearch.recallForPrompt(id, input, 900, { relax });
         recalled = r.items;
       } catch (e) {
         console.warn('[memory] 召回失败，按无记忆继续：', e.message);
       }
       // 有生图供应商才给画图能力：能调工具就走原生，否则退回标记协议
       const img = providers.resolveForImage();
-      const useTools = !!img && resolved.config.type === 'openai' && resolved.config.supportsTools;
-      const drawMode = img ? (useTools ? 'tool' : 'marker') : null;
+      const toolOk = resolved.config.type === 'openai' && resolved.config.supportsTools;
+      const drawMode = img ? (toolOk ? 'tool' : 'marker') : null;
+      const tools = toolOk
+        ? [...(img ? [IMAGE_TOOL] : []), ...memoryTools.TOOLS]
+        : undefined;
 
-      const systemPrompt = buildSystemPrompt(c, listMemories(id), recalled, { draw: drawMode });
-      const result = await llm.streamChat({
+      const systemPrompt = buildSystemPrompt(c, listMemories(id), recalled, {
+        draw: drawMode,
+        memoryTools: toolOk,
+      });
+      const conversation = [
+        { role: 'system', content: systemPrompt },
+        ...buildContext(history),
+        { role: 'user', content: input },
+      ];
+
+      // 工具循环：模型可能先查记忆/记东西，再开口说话。
+      // 最多两轮，避免模型在工具里绕不出来。
+      let preText = '';
+      let result = await llm.streamChat({
         provider: resolved.config,
         model: resolved.model,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          ...buildContext(history),
-          { role: 'user', content: input },
-        ],
-        tools: useTools ? [IMAGE_TOOL] : undefined,
+        messages: conversation,
+        tools,
         signal: controller.signal,
         onDelta: (delta) => send({ event: 'delta', text: delta }),
       });
 
+      for (let round = 0; round < 2; round++) {
+        const calls = (result.toolCalls || []).filter((t) => memoryTools.isMemoryTool(t.name));
+        if (!calls.length) break;
+        preText += result.text || '';
+        const withIds = calls.map((t, i) => ({
+          ...t,
+          id: t.id || `call_mem_${round}_${i}`,
+        }));
+        conversation.push({
+          role: 'assistant',
+          content: result.text || '',
+          tool_calls: withIds.map((t) => ({
+            id: t.id,
+            type: 'function',
+            function: { name: t.name, arguments: t.arguments || '{}' },
+          })),
+        });
+        for (const call of withIds) {
+          let out;
+          try {
+            out = await memoryTools.runTool(call.name, call.arguments, id);
+          } catch (e) {
+            out = { text: `记忆操作失败：${e.message}` };
+          }
+          conversation.push({ role: 'tool', tool_call_id: call.id, content: out.text });
+        }
+        result = await llm.streamChat({
+          provider: resolved.config,
+          model: resolved.model,
+          messages: conversation,
+          tools,
+          signal: controller.signal,
+          onDelta: (delta) => send({ event: 'delta', text: delta }),
+        });
+      }
+
       const drawPrompt = extractDrawIntent(result.toolCalls, result.text, drawMode);
       // 标记协议下要把标记从正文里摘掉，别让用户看到 [[img: ...]]
-      let finalText = drawMode === 'marker' ? result.text.replace(/\[\[img:[^\]]*\]\]/gi, '').trim() : result.text.trim();
+      const rawText = preText + (result.text || '');
+      let finalText =
+        drawMode === 'marker' ? rawText.replace(/\[\[img:[^\]]*\]\]/gi, '').trim() : rawText.trim();
 
       if (!finalText && !drawPrompt) throw new Error('模型没有返回内容');
 

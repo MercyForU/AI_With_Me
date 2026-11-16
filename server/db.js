@@ -103,6 +103,7 @@ db.exec(`
     character_id INTEGER NOT NULL,
     session_id   TEXT NOT NULL,
     content      TEXT NOT NULL,
+    embed_text   TEXT,
     msg_from     INTEGER,
     msg_to       INTEGER,
     token_count  INTEGER NOT NULL DEFAULT 0,
@@ -112,7 +113,9 @@ db.exec(`
     vector       BLOB,
     embedded_at  TEXT,
     created_at   TEXT NOT NULL,
-    deleted_at   TEXT
+    deleted_at   TEXT,
+    raw_content  TEXT,
+    source       TEXT NOT NULL DEFAULT 'chat'
   );
 
   CREATE UNIQUE INDEX IF NOT EXISTS idx_chunk_hash ON memory_chunks (character_id, content_hash);
@@ -150,6 +153,9 @@ function ensureColumn(table, column, ddl) {
 ensureColumn('characters', 'avatar_url', 'avatar_url TEXT');
 ensureColumn('providers', 'models', "models TEXT NOT NULL DEFAULT '[]'");
 ensureColumn('memory_chunks', 'embed_text', 'embed_text TEXT');
+// 归档前用模型总结过的话，content 是摘要、raw_content 留原文；source 区分是谁写的
+ensureColumn('memory_chunks', 'raw_content', 'raw_content TEXT');
+ensureColumn('memory_chunks', 'source', "source TEXT NOT NULL DEFAULT 'chat'");
 ensureColumn('providers', 'kind', "kind TEXT NOT NULL DEFAULT 'chat'");
 ensureColumn('providers', 'supports_vision', 'supports_vision INTEGER NOT NULL DEFAULT 0');
 ensureColumn('providers', 'preferred_model', 'preferred_model TEXT');

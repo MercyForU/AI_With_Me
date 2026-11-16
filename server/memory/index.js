@@ -3,7 +3,8 @@
  * 记忆是常驻功能，无开关；模型缺失时降级为「只写 FTS 不写向量」，不影响对话。
  */
 const { db, now } = require('../db');
-const { buildChunks } = require('./chunk');
+const { buildChunks, hashText } = require('./chunk');
+const { summarizeChunk } = require('./summarize');
 
 const WINDOW = 16; // 与 prompt.buildContext 的窗口一致：最近 16 条留在上下文里
 
@@ -74,13 +75,30 @@ async function ingest(characterId, characterName, opts = {}) {
   const chunks = buildChunks(msgs, { characterName, countTokens });
   if (!chunks.length) return { created: 0, embedded: 0, skipped: 0 };
 
+  // 先总结再入库：摘要当 content，原文留 raw_content。
+  // 一次回复最多总结 4 块，多了排队太久，剩下的按原文存。
+  const MAX_SUMMARIZE = 4;
+  const prepared = [];
+  let summarized = 0;
+  for (let i = 0; i < chunks.length; i++) {
+    const c = chunks[i];
+    const summary = i < MAX_SUMMARIZE ? await summarizeChunk(c.content, characterName) : null;
+    if (summary) summarized += 1;
+    prepared.push({
+      ...c,
+      content: summary || c.content,
+      raw: summary ? c.content : null,
+      embedText: summary || c.embedText || c.content,
+    });
+  }
+
   // 向量：模型不可用时整体跳过，块仍然入库（FTS 可搜）
   let vectors = [];
   let modelId = null;
   if (!embedFailed) {
     try {
       const embedding = require('../embedding');
-      vectors = await embedding.embed(chunks.map((c) => c.embedText || c.content));
+      vectors = await embedding.embed(prepared.map((c) => c.embedText));
       modelId = embedding.currentModelId();
     } catch (e) {
       embedFailed = true;
@@ -93,15 +111,15 @@ async function ingest(characterId, characterName, opts = {}) {
   const insert = db.prepare(
     `INSERT OR IGNORE INTO memory_chunks
       (id, character_id, session_id, content, embed_text, msg_from, msg_to, token_count, content_hash,
-       embed_model, embed_dim, vector, embedded_at, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       embed_model, embed_dim, vector, embedded_at, created_at, raw_content, source)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'chat')`,
   );
   const insertFts = db.prepare('INSERT INTO memory_fts (chunk_id, content) VALUES (?, ?)');
   const crypto = require('node:crypto');
 
   let created = 0;
   let embedded = 0;
-  chunks.forEach((c, i) => {
+  prepared.forEach((c, i) => {
     const id = crypto.randomUUID();
     const vec = vectors[i] || null;
     const info = insert.run(
@@ -109,7 +127,7 @@ async function ingest(characterId, characterName, opts = {}) {
       characterId,
       c.sessionId,
       c.content,
-      c.embedText || c.content,
+      c.embedText,
       c.msgFrom,
       c.msgTo,
       c.tokenCount,
@@ -119,6 +137,7 @@ async function ingest(characterId, characterName, opts = {}) {
       vec ? vectorToBuffer(vec) : null,
       vec ? now() : null,
       now(),
+      c.raw,
     );
     if (info.changes > 0) {
       created += 1;
@@ -127,7 +146,70 @@ async function ingest(characterId, characterName, opts = {}) {
     }
   });
 
-  return { created, embedded, skipped: chunks.length - created };
+  return { created, embedded, skipped: prepared.length - created, summarized };
+}
+
+/**
+ * 直接写一条记忆（用户手动添加，或模型调用 memory_write）。
+ * @returns {{id:string, content:string, embedded:boolean}}
+ */
+async function insertChunk(characterId, content, opts = {}) {
+  const text = String(content || '').trim().slice(0, 2000);
+  if (!text) throw new Error('记忆内容不能为空');
+
+  let vec = null;
+  let modelId = null;
+  try {
+    const embedding = require('../embedding');
+    [vec] = await embedding.embed([text]);
+    modelId = embedding.currentModelId();
+  } catch (e) {
+    console.warn('[memory] 新记忆算向量失败，先按关键词检索：', e.message);
+  }
+
+  const id = require('node:crypto').randomUUID();
+  const source = opts.source === 'model' ? 'model' : 'manual';
+  db.prepare(
+    `INSERT INTO memory_chunks
+      (id, character_id, session_id, content, embed_text, msg_from, msg_to, token_count, content_hash,
+       embed_model, embed_dim, vector, embedded_at, created_at, raw_content, source)
+     VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+  ).run(
+    id,
+    characterId,
+    new Date().toISOString().slice(0, 10),
+    text,
+    text,
+    countTokens(text),
+    `${hashText(`${text}\u0000${id}`)}-${text.length}`,
+    vec ? modelId : null,
+    vec ? vec.length : null,
+    vec ? vectorToBuffer(vec) : null,
+    vec ? now() : null,
+    now(),
+    source,
+  );
+
+  try {
+    db.prepare('INSERT INTO memory_fts (chunk_id, content) VALUES (?, ?)').run(id, text);
+  } catch {
+    /* FTS 不可用时关键词路会退回 LIKE */
+  }
+
+  return { id, content: text, embedded: Boolean(vec) };
+}
+
+/** 删除一条记忆（连同 FTS 行） */
+function deleteChunk(id) {
+  const row = db.prepare('SELECT id FROM memory_chunks WHERE id = ?').get(id);
+  if (!row) throw new Error('这条记忆不存在了');
+  try {
+    db.prepare('DELETE FROM memory_fts WHERE chunk_id = ?').run(id);
+  } catch {
+    /* ignore */
+  }
+  db.prepare('DELETE FROM memory_chunks WHERE id = ?').run(id);
+  return { id, removed: 1 };
 }
 
 function stats(characterId) {
@@ -152,7 +234,7 @@ function listChunks(characterId, opts = {}) {
     .get(characterId).c;
   const rows = db
     .prepare(
-      `SELECT id, content, created_at, token_count, vector IS NOT NULL AS has_vector
+      `SELECT id, content, raw_content, source, created_at, token_count, vector IS NOT NULL AS has_vector
          FROM memory_chunks
         WHERE character_id = ? AND deleted_at IS NULL
         ORDER BY created_at DESC, id DESC
@@ -163,6 +245,8 @@ function listChunks(characterId, opts = {}) {
     items: rows.map((r) => ({
       id: r.id,
       content: r.content,
+      raw: r.raw_content || null,
+      source: r.source || 'chat',
       createdAt: r.created_at,
       tokens: r.token_count,
       hasVector: Boolean(r.has_vector),
@@ -239,6 +323,8 @@ module.exports = {
   stats,
   listChunks,
   updateChunk,
+  insertChunk,
+  deleteChunk,
   clear,
   pendingMessages,
   bufferToVector,

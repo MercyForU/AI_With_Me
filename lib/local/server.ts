@@ -430,6 +430,22 @@ export async function handle(
       return fail(400, (e as Error).message);
     }
   }
+  if (chunkHit && method === 'DELETE') {
+    try {
+      return ok(await memory.deleteChunk(chunkHit[1]));
+    } catch (e) {
+      return fail(400, (e as Error).message);
+    }
+  }
+  if (path === '/api/memory/chunks' && method === 'POST') {
+    const cid = Number(body.characterId) || 0;
+    if (!cid) return fail(400, '缺少 characterId');
+    try {
+      return ok(await memory.insertChunk(cid, String(body.content || ''), { source: 'manual' }));
+    } catch (e) {
+      return fail(400, (e as Error).message);
+    }
+  }
   if (path === '/api/memory/ingest' && method === 'POST') {
     const cid = Number(body.characterId) || 0;
     const c = await getCharacter(cid);
@@ -638,36 +654,75 @@ export async function runChat(
   handlers.onUser?.(userMessage);
 
   try {
-    let recalled: Array<{ content: string }> = [];
+    const relax = memory.wantsRecall(input);
+    let recalled: Array<{ content: string; createdAt?: string }> = [];
     try {
-      const r = await memory.recallForPrompt(characterId, input, 600);
+      const r = await memory.recallForPrompt(characterId, input, 900, { relax });
       recalled = r.items;
     } catch {
       /* 召回失败就当没有记忆 */
     }
 
     const img = await resolveImageProvider();
-    const useTools = !!img && resolved.config.type === 'openai' && !!resolved.config.supportsTools;
-    const drawMode = img ? (useTools ? 'tool' : 'marker') : null;
+    const toolOk = resolved.config.type === 'openai' && !!resolved.config.supportsTools;
+    const drawMode = img ? (toolOk ? 'tool' : 'marker') : null;
+    const tools = toolOk ? [...(img ? [IMAGE_TOOL] : []), ...memory.TOOLS] : undefined;
 
-    const systemPrompt = buildSystemPrompt(c, await listMemories(characterId), recalled, { draw: drawMode });
-    const messages: ChatMessage[] = [
+    const systemPrompt = buildSystemPrompt(c, await listMemories(characterId), recalled, {
+      draw: drawMode,
+      memoryTools: toolOk,
+    });
+    const conversation: ChatMessage[] = [
       { role: 'system', content: systemPrompt },
       ...buildContext(history),
       { role: 'user', content: input.trim() },
     ];
 
-    const result = await chatStream({
+    // 工具循环：模型可以先查记忆/记东西，再开口
+    let preText = '';
+    let result = await chatStream({
       provider: resolved.config,
       model: resolved.model,
-      messages,
-      tools: useTools ? [IMAGE_TOOL] : undefined,
+      messages: conversation,
+      tools,
       onDelta: (t) => handlers.onDelta?.(t),
     });
 
+    for (let round = 0; round < 2; round++) {
+      const calls = (result.toolCalls || []).filter((t) => memory.isMemoryTool(t.name));
+      if (!calls.length) break;
+      preText += result.text || '';
+      const withIds = calls.map((t, i) => ({ ...t, id: t.id || `call_mem_${round}_${i}` }));
+      conversation.push({
+        role: 'assistant',
+        content: result.text || '',
+        tool_calls: withIds.map((t) => ({
+          id: t.id,
+          type: 'function' as const,
+          function: { name: t.name, arguments: t.arguments || '{}' },
+        })),
+      });
+      for (const call of withIds) {
+        let out;
+        try {
+          out = await memory.runTool(call.name, call.arguments, characterId);
+        } catch (e) {
+          out = { text: `记忆操作失败：${(e as Error).message}` };
+        }
+        conversation.push({ role: 'tool', tool_call_id: call.id, content: out.text });
+      }
+      result = await chatStream({
+        provider: resolved.config,
+        model: resolved.model,
+        messages: conversation,
+        tools,
+        onDelta: (t) => handlers.onDelta?.(t),
+      });
+    }
+
     const drawPrompt = extractDrawIntent(result.toolCalls, result.text, drawMode);
-    let finalText =
-      drawMode === 'marker' ? result.text.replace(/\[\[img:[^\]]*\]\]/gi, '').trim() : result.text.trim();
+    const rawText = preText + (result.text || '');
+    let finalText = drawMode === 'marker' ? rawText.replace(/\[\[img:[^\]]*\]\]/gi, '').trim() : rawText.trim();
 
     if (!finalText && !drawPrompt) throw new Error('模型没有返回内容');
 

@@ -19,9 +19,22 @@ function buildSystemPrompt(character, memories = [], recalled = [], opts = {}) {
   }
   if (recalled.length) {
     lines.push(
-      `你记得的这些往事（按时间排列，只在和当前话题相关时自然提起，不要逐条复述、不要念时间戳）：\n${recalled
-        .map((r) => `- ${r.content}`)
-        .join('\n')}`,
+      [
+        '你想起了一些往事（按时间排列，括号里是发生日期）：',
+        ...recalled.map((r) => `- ${dateTag(r.createdAt)}${r.content}`),
+        '只在和当前话题相关时自然提起，不要逐条复述，不要念日期。',
+      ].join('\n'),
+    );
+  }
+  if (opts.memoryTools) {
+    lines.push(
+      [
+        '你可以主动翻记忆、记东西：',
+        '- memory_search：想不起细节、对方提到以前的事、或你心里没底时，先查再答，不要硬编；',
+        '- memory_write：对方说了值得长期记住的事（计划、重要的人、明确偏好、你们的约定），顺手记一条；',
+        '- memory_update：发现记错了或过时了，用 memory_search 拿到的 id 改正它。',
+        '查到的内容当成你本来就知道的事，自然地说出来，不要说「我查了一下」「根据记忆」。',
+      ].join('\n'),
     );
   }
   if (opts.draw === 'marker') {
@@ -54,6 +67,15 @@ function buildContext(messages, limit = 16) {
     .filter((m) => m.role === 'user' || m.role === 'assistant')
     .slice(-limit)
     .map((m) => ({ role: m.role, content: m.content }));
+}
+
+/** 记忆里的日期标记，只给模型感知时间用，正文里不该念出来 */
+function dateTag(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const p = (n) => String(n).padStart(2, '0');
+  return `（${p(d.getMonth() + 1)}-${p(d.getDate())}）`;
 }
 
 const POST_SYSTEM = (c) =>

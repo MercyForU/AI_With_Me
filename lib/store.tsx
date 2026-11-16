@@ -71,6 +71,13 @@ export type AppContextValue = {
     opts?: { q?: string; limit?: number; offset?: number },
   ) => Promise<{ items: MemoryChunkItem[]; total: number; mode: string }>;
   updateMemoryChunk: (id: string, content: string) => Promise<boolean>;
+  createMemoryChunk: (characterId: number, content: string) => Promise<boolean>;
+  deleteMemoryChunk: (id: string) => Promise<boolean>;
+
+  /** 记忆管理面板（全局唯一，从角色页或设置页打开） */
+  memoryPanel: { open: boolean; characterId: number | null };
+  openMemoryPanel: (characterId?: number | null) => void;
+  closeMemoryPanel: () => void;
 
   streaming: boolean;
   streamingText: string;
@@ -168,6 +175,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [loadingChar, setLoadingChar] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [memoryPanel, setMemoryPanel] = useState<{ open: boolean; characterId: number | null }>({
+    open: false,
+    characterId: null,
+  });
   const abortRef = useRef<AbortController | null>(null);
 
   const notify = useCallback((text: string, tone: 'ok' | 'err' = 'ok') => {
@@ -526,6 +537,50 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     },
     [notify],
   );
+
+  const createMemoryChunk = useCallback(
+    async (characterId: number, content: string) => {
+      const text = content.trim();
+      if (!text) return false;
+      try {
+        await api('/api/memory/chunks', { method: 'POST', body: { characterId, content: text } });
+        notify('已记下');
+        return true;
+      } catch (e) {
+        notify(errorMessage(e, '写入失败'), 'err');
+        return false;
+      }
+    },
+    [notify],
+  );
+
+  const deleteMemoryChunk = useCallback(
+    async (id: string) => {
+      try {
+        await api(`/api/memory/chunks/${id}`, { method: 'DELETE' });
+        notify('这条记忆已删除');
+        return true;
+      } catch (e) {
+        notify(errorMessage(e, '删除失败'), 'err');
+        return false;
+      }
+    },
+    [notify],
+  );
+
+  const openMemoryPanel = useCallback(
+    (characterId?: number | null) => {
+      const id = characterId ?? activeId;
+      if (!id) {
+        notify('先选一个角色', 'err');
+        return;
+      }
+      setMemoryPanel({ open: true, characterId: id });
+    },
+    [activeId, notify],
+  );
+
+  const closeMemoryPanel = useCallback(() => setMemoryPanel({ open: false, characterId: null }), []);
 
   const uploadAvatar = useCallback(
     async (file: File) => {
@@ -933,6 +988,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     memoryStats,
     listMemoryChunks,
     updateMemoryChunk,
+    createMemoryChunk,
+    deleteMemoryChunk,
+    memoryPanel,
+    openMemoryPanel,
+    closeMemoryPanel,
     streaming,
     streamingText,
     loadingChar,
