@@ -29,8 +29,8 @@ models/
 public/ort/
 
 # ---------- 打包产物 ----------
+# 注意：build/ 是 electron-builder 的资源目录（installer.nsh 在里面），不能忽略
 dist/
-build/
 *.apk
 *.aab
 *.exe

@@ -1,6 +1,6 @@
 {
   "name": "ai-companion",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "scripts": {
     "build": "node scripts/copy-ort.mjs && next build && node scripts/export-copy.mjs",
@@ -64,7 +64,8 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
-      "shortcutName": "暧"
+      "shortcutName": "暧",
+      "include": "build/installer.nsh"
     }
   }
 }

@@ -119,3 +119,16 @@ app.whenReady().then(async () => {
 app.on('window-all-closed', () => {
   app.quit();
 });
+
+// 退出流程要「确定地」走完：
+// 后端是跑在主进程里的 http 服务，如果进程没退干净，升级安装时会被判定为
+// 「应用仍在运行」而卡住安装（实测踩过）。所以这里补两道保险。
+app.on('before-quit', () => {
+  // destroy 而不是 close：跳过页面里的 beforeunload，不给退出流程留悬念
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.destroy();
+});
+
+app.on('will-quit', () => {
+  // 兜底：200ms 后无论如何结束进程；正常路径早就退了，这里不会真跑到
+  setTimeout(() => process.exit(0), 200);
+});
