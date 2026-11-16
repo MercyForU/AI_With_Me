@@ -446,6 +446,7 @@ export default function CharactersView() {
                 <button
                   onClick={() => void exportCharacter(current.id)}
                   className="btn-primary flex-1"
+                  title="人设 + 记忆（不含聊天记录）"
                 >
                   <IconDownload size={16} />
                   导出角色卡

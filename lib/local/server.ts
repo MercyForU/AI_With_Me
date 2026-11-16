@@ -488,6 +488,81 @@ export async function handle(
     });
   }
 
+  // ---- 导入 ----
+  if (path === '/api/import' && method === 'POST') {
+    try {
+      // 角色卡：人设 + 记忆（手记 + 归档），不含聊天记录
+      if (body.spec === 'nuan.character.v2' || body.spec === 'nuan.character.v1') {
+        const src = (body.character || {}) as Record<string, unknown>;
+        const created = await createCharacter({ ...src, greeting: src.greeting ?? null });
+        let memCount = 0;
+        for (const m of Array.isArray(body.memories) ? body.memories : []) {
+          const content = str((m as Record<string, unknown>).content, 1000);
+          if (!content) continue;
+          await run(
+            'INSERT INTO memories (character_id, content, kind, importance, created_at) VALUES (?, ?, ?, ?, ?)',
+            [created.id, content, str((m as Record<string, unknown>).kind, 20) || 'fact', 1, now()],
+          );
+          memCount += 1;
+        }
+        let archive = 0;
+        const list = Array.isArray(body.archive) ? body.archive.slice(0, 300) : [];
+        for (const a of list) {
+          const content = str((a as Record<string, unknown>).content, 2000);
+          if (!content) continue;
+          await memory.insertChunk(created.id, content, { source: str((a as Record<string, unknown>).source, 20) || 'chat' });
+          archive += 1;
+        }
+        return ok({ imported: 1, ids: [created.id], kind: 'card', memories: memCount, archive });
+      }
+
+      if (body.spec !== 'nuan.backup.v1' || !Array.isArray(body.characters)) {
+        return fail(400, '这个文件不是角色卡，也不是备份');
+      }
+      let count = 0;
+      for (const c of body.characters) {
+        const src = (c || {}) as Record<string, unknown>;
+        const created = await createCharacter({ ...src, greeting: null });
+        for (const m of (src.messages as unknown[]) || []) {
+          const row = m as Record<string, unknown>;
+          const content = str(row.content, 8000);
+          if (!content) continue;
+          await insertMessage(created.id, row.role === 'user' ? 'user' : 'assistant', content, str(row.kind, 20) || 'text');
+        }
+        for (const m of (src.memories as unknown[]) || []) {
+          const row = m as Record<string, unknown>;
+          const content = str(row.content, 1000);
+          if (!content) continue;
+          await run(
+            'INSERT INTO memories (character_id, content, kind, importance, created_at) VALUES (?, ?, ?, ?, ?)',
+            [created.id, content, str(row.kind, 20) || 'fact', Number(row.importance) || 1, now()],
+          );
+        }
+        count += 1;
+      }
+      return ok({ imported: count, kind: 'backup' });
+    } catch (e) {
+      return fail(400, (e as Error).message);
+    }
+  }
+
+  const chatImport = path.match(/^\/api\/import\/chat\/(\d+)$/);
+  if (chatImport && method === 'POST') {
+    const id = Number(chatImport[1]);
+    if (!(await getCharacter(id))) return fail(404, '角色不存在');
+    const list = Array.isArray(body.messages) ? body.messages : [];
+    if (!list.length) return fail(400, '这个文件里没有聊天记录');
+    let count = 0;
+    for (const m of list.slice(0, 5000)) {
+      const row = m as Record<string, unknown>;
+      const content = str(row.content, 8000);
+      if (!content || row.kind === 'system') continue;
+      await insertMessage(id, row.role === 'assistant' ? 'assistant' : 'user', content, str(row.kind, 20) || 'text');
+      count += 1;
+    }
+    return ok({ imported: count });
+  }
+
   // ---- 角色 ----
   if (path === '/api/characters' && method === 'GET') return ok({ characters: await listCharacters() });
   if (path === '/api/characters' && method === 'POST') {
@@ -528,6 +603,7 @@ export async function handle(
       messages: await listMessages(id),
       memories: await listMemories(id),
       games: await listGames(id),
+      archive: (await memory.listChunks(id, 500)).items,
     });
   }
 
@@ -652,6 +728,10 @@ export async function handle(
         'INSERT INTO posts (character_id, content, likes, liked, created_at) VALUES (?, ?, 0, 0, ?)',
         [id, content.slice(0, 2000), t],
       );
+      // 发过的动态也算她的经历，写进记忆
+      await memory
+        .insertChunk(id, `${c.name}在圈子里发了一条动态：「${content.slice(0, 120)}」`, { source: 'post' })
+        .catch(() => {});
       return ok({
         post: { id: ins.lastId, character_id: id, content, likes: 0, liked: 0, created_at: t },
       });

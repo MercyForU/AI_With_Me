@@ -277,7 +277,7 @@ export async function ingest(
 export async function insertChunk(
   characterId: number,
   content: string,
-  opts: { source?: 'manual' | 'model' | 'game' } = {},
+  opts: { source?: string } = {},
 ) {
   const text = String(content || '').trim().slice(0, 2000);
   if (!text) throw new Error('记忆内容不能为空');
@@ -302,7 +302,7 @@ export async function insertChunk(
       vec ? vecToB64(vec) : null,
       vec ? now() : null,
       now(),
-      opts.source === 'model' ? 'model' : opts.source === 'game' ? 'game' : 'manual',
+      ['model', 'game', 'post', 'chat'].includes(opts.source || '') ? opts.source! : 'manual',
     ],
   );
   return { id, content: text, embedded: Boolean(vec) };

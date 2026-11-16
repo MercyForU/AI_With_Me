@@ -298,9 +298,30 @@ function exportAll() {
   };
 }
 
-function importAll(payload) {
+async function importAll(payload) {
+  // 角色卡：人设 + 记忆（手记 + 归档），不含聊天记录
+  if (payload && (payload.spec === 'nuan.character.v2' || payload.spec === 'nuan.character.v1')) {
+    const created = createCharacter({ ...(payload.character || {}), greeting: payload.character?.greeting ?? null });
+    for (const m of payload.memories || []) {
+      db.prepare('INSERT INTO memories (character_id, content, kind, importance, created_at) VALUES (?, ?, ?, ?, ?)').run(
+        created.id,
+        str(m.content, 1000),
+        str(m.kind, 20) || 'fact',
+        Number(m.importance) || 1,
+        now(),
+      );
+    }
+    let archive = 0;
+    for (const a of (payload.archive || []).slice(0, 300)) {
+      if (!str(a.content, 2000)) continue;
+      await memory.insertChunk(created.id, str(a.content, 2000), { source: str(a.source, 20) || 'chat' });
+      archive += 1;
+    }
+    return { imported: 1, ids: [created.id], kind: 'card', archive };
+  }
+
   if (!payload || payload.spec !== 'nuan.backup.v1' || !Array.isArray(payload.characters)) {
-    throw new Error('不是本应用导出的备份文件');
+    throw new Error('这个文件不是角色卡，也不是备份');
   }
   let count = 0;
   const ids = [];
@@ -690,10 +711,28 @@ async function handle(req, res, url) {
 
   if (path === '/api/import' && method === 'POST') {
     try {
-      return json(res, 200, importAll(await readBody(req)));
+      return json(res, 200, await importAll(await readBody(req)));
     } catch (e) {
       return json(res, 400, { error: e.message });
     }
+  }
+
+  // 聊天记录单独导入：追加到指定角色身上
+  const chatImport = m(/^\/api\/import\/chat\/(\d+)$/);
+  if (chatImport && method === 'POST') {
+    const id = Number(chatImport[1]);
+    if (!getCharacter(id)) return json(res, 404, { error: '角色不存在' });
+    const body = await readBody(req);
+    const list = Array.isArray(body.messages) ? body.messages : [];
+    if (!list.length) return json(res, 400, { error: '这个文件里没有聊天记录' });
+    let count = 0;
+    for (const msg of list.slice(0, 5000)) {
+      const content = str(msg.content, 8000);
+      if (!content || msg.kind === 'system') continue;
+      insertMessage(id, msg.role === 'assistant' ? 'assistant' : 'user', content, str(msg.kind, 20) || 'text');
+      count += 1;
+    }
+    return json(res, 200, { imported: count });
   }
 
   // 角色列表 / 创建
@@ -742,6 +781,7 @@ async function handle(req, res, url) {
       messages: listMessages(id),
       memories: listMemories(id),
       games: listGames(id),
+      archive: memory.listChunks(id, { limit: 500 }).items,
     });
   }
 
@@ -894,6 +934,10 @@ async function handle(req, res, url) {
       const info = db
         .prepare('INSERT INTO posts (character_id, content, likes, liked, created_at) VALUES (?, ?, 0, 0, ?)')
         .run(id, content.slice(0, 2000), t);
+      // 发过的动态也算她的经历，写进记忆
+      memory
+        .insertChunk(id, `${c.name}在圈子里发了一条动态：「${content.slice(0, 120)}」`, { source: 'post' })
+        .catch((e) => console.warn('[post] 写进记忆失败：', e.message));
       return json(res, 200, {
         post: {
           id: Number(info.lastInsertRowid),

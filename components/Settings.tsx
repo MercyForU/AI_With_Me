@@ -72,6 +72,8 @@ export default function Settings() {
     testProvider,
     exportAll,
     importAll,
+    exportCharacter,
+    exportChat,
     signOut,
     notify,
     openSettings,
@@ -493,7 +495,7 @@ export default function Settings() {
             </button>
             <button onClick={() => fileRef.current?.click()} className="btn-ghost h-9 flex-1 text-[12px]">
               <IconUpload size={14} />
-              导入备份
+              导入文件
             </button>
             <input
               ref={fileRef}
@@ -507,6 +509,37 @@ export default function Settings() {
               }}
             />
           </div>
+
+          <div className="mt-2 rounded-lg border border-line bg-tint/[0.02] px-2.5 py-2">
+            <p className="text-[10.5px] leading-relaxed text-fg-dimmer">
+              导入会自己认文件类型：
+              <span className="text-fg-dim">角色卡</span>（人设 + 记忆，创建新角色）、
+              <span className="text-fg-dim">聊天记录</span>（合并到当前角色）、
+              <span className="text-fg-dim">完整备份</span>（还原所有角色）。
+            </p>
+          </div>
+
+          <div className="mt-2 flex gap-2">
+            <button
+              onClick={() => active && void exportCharacter(active.id)}
+              disabled={!active}
+              className="btn-ghost h-9 flex-1 text-[12px] disabled:opacity-50"
+            >
+              <IconDownload size={14} />
+              导出角色卡
+            </button>
+            <button
+              onClick={() => active && void exportChat(active.id)}
+              disabled={!active}
+              className="btn-ghost h-9 flex-1 text-[12px] disabled:opacity-50"
+            >
+              <IconDownload size={14} />
+              导出聊天记录
+            </button>
+          </div>
+          <p className="mt-1.5 text-[10.5px] leading-relaxed text-fg-dimmer">
+            角色卡只带人设和记忆；聊天记录是单独一份 .json，可以单独备份或搬到别的角色上。
+          </p>
         </section>
 
         {isNativeApp() ? null : (

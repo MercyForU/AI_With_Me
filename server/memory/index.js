@@ -169,7 +169,7 @@ async function insertChunk(characterId, content, opts = {}) {
   }
 
   const id = require('node:crypto').randomUUID();
-  const source = ['model', 'game'].includes(opts.source) ? opts.source : 'manual';
+  const source = ['model', 'game', 'post', 'chat'].includes(opts.source) ? opts.source : 'manual';
   db.prepare(
     `INSERT INTO memory_chunks
       (id, character_id, session_id, content, embed_text, msg_from, msg_to, token_count, content_hash,

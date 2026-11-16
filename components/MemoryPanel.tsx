@@ -11,6 +11,7 @@ const SOURCE_LABEL: Record<string, string> = {
   manual: '我写的',
   model: '她记的',
   game: '一起玩的',
+  post: '圈子动态',
 };
 
 function dayLabel(iso?: string) {

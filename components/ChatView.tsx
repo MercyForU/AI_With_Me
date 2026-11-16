@@ -59,6 +59,7 @@ export default function ChatView() {
     stopStreaming,
     models,
     exportCharacter,
+    exportChat,
     addMemory,
     loadingChar,
     currentModelOption,
@@ -599,6 +600,7 @@ export default function ChatView() {
                 setMemoryDraft('');
               }}
               onExport={() => void exportCharacter(active.id)}
+              onExportChat={() => void exportChat(active.id)}
             />
           </aside>
 
@@ -623,6 +625,7 @@ export default function ChatView() {
                     setMemoryDraft('');
                   }}
                   onExport={() => void exportCharacter(active.id)}
+                  onExportChat={() => void exportChat(active.id)}
                 />
               </div>
             </div>
@@ -673,6 +676,7 @@ function Snapshot({
   setMemoryDraft,
   onAddMemory,
   onExport,
+  onExportChat,
 }: {
   character: Character;
   memoryCount: number;
@@ -685,6 +689,7 @@ function Snapshot({
   setMemoryDraft: (v: string) => void;
   onAddMemory: () => void;
   onExport: () => void;
+  onExportChat: () => void;
 }) {
   return (
     <div className="flex flex-col gap-4 p-4">
@@ -771,10 +776,16 @@ function Snapshot({
         </div>
       </div>
 
-      <button onClick={onExport} className="btn-ghost w-full text-[12.5px]">
-        <IconDownload size={15} />
-        导出角色卡
-      </button>
+      <div className="flex gap-2">
+        <button onClick={onExport} className="btn-ghost flex-1 text-[12px]" title="人设 + 记忆">
+          <IconDownload size={14} />
+          导出角色卡
+        </button>
+        <button onClick={onExportChat} className="btn-ghost flex-1 text-[12px]" title="只导出聊天记录">
+          <IconDownload size={14} />
+          导出聊天记录
+        </button>
+      </div>
 
       <div className="rounded-xl border border-line bg-tint/[0.02] p-3">
         <div className="flex items-center gap-1.5 text-[11px] text-fg-dim">

@@ -1,10 +1,16 @@
-import type { Character, CharacterDraft, GameRecord, Memory, Message } from './types';
+import { Capacitor } from '@capacitor/core';
+import { Directory, Encoding, Filesystem } from '@capacitor/filesystem';
+import { Share } from '@capacitor/share';
+import type { Character, Memory, MemoryChunkItem, Message } from './types';
 
-export const CARD_SPEC = 'nuan.character.v1';
+/** 角色卡：人设 + 记忆（不含聊天记录） */
+export const CARD_SPEC = 'nuan.character.v2';
+/** 聊天记录：单独一份文件，导入时合并到某个角色 */
+export const CHAT_SPEC = 'nuan.chat.v1';
 
 export type CardFile = {
   spec: typeof CARD_SPEC;
-  version: 1;
+  version: 2;
   exportedAt: string;
   character: {
     name: string;
@@ -20,20 +26,34 @@ export type CardFile = {
     relationship_level: number;
     affinity: number;
   };
+  /** 手记：平时随手记下的要点 */
   memories: { content: string; kind: string; importance: number; created_at: string }[];
-  messages: { role: 'user' | 'assistant'; content: string; kind: string; created_at: string }[];
-  games: { game_key: string; result: string; summary: string | null; created_at: string }[];
+  /** 归档记忆：对话总结出来的那些 */
+  archive: { content: string; source: string; created_at: string }[];
+};
+
+export type ChatFile = {
+  spec: typeof CHAT_SPEC;
+  version: 1;
+  exportedAt: string;
+  character: { name: string; emoji: string };
+  messages: {
+    role: 'user' | 'assistant';
+    content: string;
+    kind: string;
+    created_at: string;
+    attachments?: unknown[];
+  }[];
 };
 
 export function buildCardFile(
   character: Character,
   memories: Memory[],
-  messages: Message[],
-  games: GameRecord[],
+  archive: MemoryChunkItem[],
 ): CardFile {
   return {
     spec: CARD_SPEC,
-    version: 1,
+    version: 2,
     exportedAt: new Date().toISOString(),
     character: {
       name: character.name,
@@ -55,60 +75,90 @@ export function buildCardFile(
       importance: m.importance,
       created_at: m.created_at,
     })),
-    // 上下文清空标记只是界面分隔，不进角色卡
+    archive: archive.map((a) => ({
+      content: a.content,
+      source: a.source || 'chat',
+      created_at: a.createdAt || '',
+    })),
+  };
+}
+
+export function buildChatFile(character: Character, messages: Message[]): ChatFile {
+  return {
+    spec: CHAT_SPEC,
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    character: { name: character.name, emoji: character.emoji },
     messages: messages
       .filter((m) => m.role === 'user' || m.role === 'assistant')
+      .filter((m) => m.kind !== 'system')
       .map((m) => ({
         role: m.role as 'user' | 'assistant',
         content: m.content,
         kind: m.kind,
         created_at: m.created_at,
+        ...(m.attachments && m.attachments.length ? { attachments: m.attachments } : {}),
       })),
-    games: games.map((g) => ({
-      game_key: g.game_key,
-      result: g.result,
-      summary: g.summary,
-      created_at: g.created_at,
-    })),
   };
+}
+
+/** 读文件：只做格式校验，具体怎么导入交给调用方按 spec 分发 */
+export function parseJsonFile(text: string): Record<string, unknown> {
+  let data: unknown;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new Error('这不是有效的 JSON 文件');
+  }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    throw new Error('文件内容不是一个对象');
+  }
+  const obj = data as Record<string, unknown>;
+  if (!obj.spec) throw new Error('这个文件不是本应用导出的');
+  return obj;
 }
 
 export function safeFileName(name: string): string {
   return (name || 'character').replace(/[\\/:*?"<>|\s]+/g, '_').slice(0, 40);
 }
 
-export async function downloadCard(file: CardFile, name: string): Promise<'downloaded' | 'shared' | 'copied'> {
-  const text = JSON.stringify(file, null, 2);
-  const filename = `${safeFileName(name)}.character.json`;
+/**
+ * 存成真文件。
+ * 手机端：先写进应用缓存目录，再唤起系统分享——存到「文件」、发微信、存网盘都行，
+ * 拿到的是一个完整 .json，而不是一段剪贴板文本。
+ */
+export async function downloadJsonFile(
+  data: unknown,
+  baseName: string,
+  suffix: string,
+): Promise<'shared' | 'downloaded' | 'copied'> {
+  const text = JSON.stringify(data, null, 2);
+  const filename = `${safeFileName(baseName)}.${suffix}.json`;
 
-  // 手机版（WebView）里 a[download] 不生效，依次尝试系统分享、复制到剪贴板
-  const native = typeof window !== 'undefined' &&
-    Boolean((window as unknown as { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor?.isNativePlatform?.());
-  if (native) {
+  if (Capacitor.isNativePlatform()) {
     try {
-      const nav = navigator as Navigator & {
-        canShare?: (d: { files?: File[] }) => boolean;
-        share?: (d: { files?: File[]; title?: string; text?: string }) => Promise<void>;
-      };
-      if (nav.share && nav.canShare) {
-        const f = new File([text], filename, { type: 'application/json' });
-        if (nav.canShare({ files: [f] })) {
-          await nav.share({ files: [f], title: filename });
-          return 'shared';
-        }
+      const saved = await Filesystem.writeFile({
+        path: filename,
+        data: text,
+        directory: Directory.Cache,
+        encoding: Encoding.UTF8,
+      });
+      await Share.share({ title: filename, url: saved.uri, dialogTitle: '保存或发送文件' });
+      return 'shared';
+    } catch (e) {
+      const msg = String((e as Error)?.message || e);
+      // 用户在分享面板点了取消，不算失败
+      if (/cancel/i.test(msg)) return 'shared';
+      try {
+        await navigator.clipboard.writeText(text);
+        return 'copied';
+      } catch {
+        throw new Error('写文件失败，也没有剪贴板权限');
       }
-    } catch {
-      /* 用户取消分享也走复制 */
-    }
-    try {
-      await navigator.clipboard.writeText(text);
-      return 'copied';
-    } catch {
-      return 'downloaded';
     }
   }
 
-  const blob = new Blob([text], { type: 'application/json;charset=utf-8' });
+  const blob = new Blob([text], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -116,102 +166,6 @@ export async function downloadCard(file: CardFile, name: string): Promise<'downl
   document.body.appendChild(a);
   a.click();
   a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 2000);
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
   return 'downloaded';
-}
-
-export type ParsedCard = {
-  draft: CharacterDraft;
-  memories: { content: string; kind: string; importance: number }[];
-  messages: { role: 'user' | 'assistant'; content: string; kind: string }[];
-  games: { game_key: string; result: string; summary: string | null }[];
-};
-
-type Loose = Record<string, unknown>;
-
-function str(v: unknown): string {
-  return typeof v === 'string' ? v : '';
-}
-
-/**
- * 宽容解析：
- * 1) 本产品标准文件（nuan.character.v1）
- * 2) Character Card V2 / V3（chara_card_v2 / v3）
- * 3) 扁平 { name, personality, ... } 对象
- */
-export function parseCardFile(text: string): ParsedCard {
-  let raw: Loose;
-  try {
-    raw = JSON.parse(text) as Loose;
-  } catch {
-    throw new Error('文件不是合法的 JSON');
-  }
-  if (!raw || typeof raw !== 'object') throw new Error('文件内容无法识别');
-
-  const emptyExtras = { memories: [], messages: [], games: [] };
-
-  if (raw.spec === CARD_SPEC && raw.character && typeof raw.character === 'object') {
-    const c = raw.character as Loose;
-    if (!str(c.name).trim()) throw new Error('角色文件缺少名称');
-    return {
-      draft: {
-        name: str(c.name).slice(0, 40),
-        emoji: str(c.emoji) || '🌙',
-        accent: str(c.accent) || 'violet',
-        tagline: str(c.tagline),
-        personality: str(c.personality),
-        scenario: str(c.scenario),
-        greeting: str(c.greeting),
-        memory_note: str(c.memory_note),
-        model_id: null,
-        model_label: null,
-      },
-      memories: Array.isArray(raw.memories)
-        ? (raw.memories as Loose[]).map((m) => ({
-            content: str(m.content),
-            kind: str(m.kind) || 'fact',
-            importance: Number(m.importance) || 1,
-          })).filter((m) => m.content)
-        : [],
-      messages: Array.isArray(raw.messages)
-        ? (raw.messages as Loose[])
-            .map((m) => ({
-              role: m.role === 'user' ? ('user' as const) : ('assistant' as const),
-              content: str(m.content),
-              kind: str(m.kind) || 'text',
-            }))
-            .filter((m) => m.content)
-        : [],
-      games: Array.isArray(raw.games)
-        ? (raw.games as Loose[]).map((g) => ({
-            game_key: str(g.game_key) || 'rps',
-            result: str(g.result) || 'draw',
-            summary: str(g.summary) || null,
-          }))
-        : [],
-    };
-  }
-
-  // Character Card V2 / V3
-  const data = (raw.data && typeof raw.data === 'object' ? raw.data : raw) as Loose;
-  const name = str(data.name) || str(data.char_name);
-  if (!name.trim()) throw new Error('角色文件缺少名称');
-  const description = str(data.description);
-  const personality = str(data.personality);
-  const scenario = str(data.scenario);
-  return {
-    draft: {
-      name: name.slice(0, 40),
-      emoji: '🌙',
-      accent: 'violet',
-      tagline: description.slice(0, 40),
-      personality: [personality, description].filter(Boolean).join('\n\n'),
-      scenario,
-      greeting: str(data.first_mes) || str(data.greeting),
-      memory_note: '',
-      model_id: null,
-      model_label: null,
-    },
-    ...emptyExtras,
-  };
 }

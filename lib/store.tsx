@@ -10,7 +10,13 @@ import React, {
   useState,
 } from 'react';
 import { api, ApiError, downloadJson, errorMessage, streamChat } from './api';
-import { buildCardFile, downloadCard, parseCardFile } from './characterFile';
+import {
+  buildCardFile,
+  buildChatFile,
+  CHAT_SPEC,
+  downloadJsonFile,
+  parseJsonFile,
+} from './characterFile';
 import type {
   Character,
   CharacterDraft,
@@ -136,6 +142,8 @@ export type AppContextValue = {
   deletePost: (postId: number) => Promise<void>;
   toggleLike: (postId: number) => Promise<void>;
   exportCharacter: (id: number) => Promise<void>;
+  /** 聊天记录单独导出 */
+  exportChat: (id: number) => Promise<void>;
   importCard: (text: string) => Promise<Character | null>;
   exportAll: () => Promise<void>;
   importAll: (file: File) => Promise<void>;
@@ -949,17 +957,43 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const character = characters.find((c) => c.id === id);
       if (!character) return;
       try {
-        const data = await api<{ messages: Message[]; memories: Memory[]; games: GameRecord[] }>(
+        const data = await api<{ memories: Memory[]; archive: MemoryChunkItem[] }>(
           `/api/characters/${id}/data`,
         );
-        const file = buildCardFile(character, data.memories, data.messages, data.games);
-        const how = await downloadCard(file, character.name);
+        const file = buildCardFile(character, data.memories || [], data.archive || []);
+        const how = await downloadJsonFile(file, character.name, 'character');
         notify(
           how === 'copied'
-            ? '角色卡已复制到剪贴板，粘贴到文件里保存即可'
+            ? '角色卡已复制到剪贴板（写文件失败）'
             : how === 'shared'
-              ? '已通过系统分享导出角色卡'
-              : '已导出角色卡（人格 / 记忆 / 聊天 / 游戏经历）',
+              ? `角色卡已生成：${file.memories.length + file.archive.length} 条记忆`
+              : '已导出角色卡（人设 + 记忆）',
+        );
+      } catch (e) {
+        notify(errorMessage(e, '导出失败'), 'err');
+      }
+    },
+    [characters, notify],
+  );
+
+  /** 聊天记录单独导出，和角色卡互不干扰 */
+  const exportChat = useCallback(
+    async (id: number) => {
+      const character = characters.find((c) => c.id === id);
+      if (!character) return;
+      try {
+        const data = await api<{ messages: Message[] }>(`/api/characters/${id}/data`);
+        const list = data.messages || [];
+        if (!list.length) {
+          notify('这个角色还没有聊天记录', 'err');
+          return;
+        }
+        const file = buildChatFile(character, list);
+        const how = await downloadJsonFile(file, character.name, 'chat');
+        notify(
+          how === 'copied'
+            ? '聊天记录已复制到剪贴板（写文件失败）'
+            : `聊天记录已导出，共 ${file.messages.length} 条`,
         );
       } catch (e) {
         notify(errorMessage(e, '导出失败'), 'err');
@@ -970,40 +1004,26 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const importCard = useCallback(
     async (text: string) => {
-      let parsed;
+      let payload: Record<string, unknown>;
       try {
-        parsed = parseCardFile(text);
+        payload = parseJsonFile(text);
       } catch (e) {
         notify(errorMessage(e, '文件无法解析'), 'err');
         return null;
       }
+      if (payload.spec === CHAT_SPEC) {
+        notify('这是聊天记录文件，不是角色卡', 'err');
+        return null;
+      }
       try {
-        const payload = {
-          spec: 'nuan.backup.v1',
-          version: 1,
-          characters: [
-            {
-              ...parsed.draft,
-              relationship_level: 1,
-              affinity: 0,
-              messages: parsed.messages,
-              memories: parsed.memories,
-              games: parsed.games,
-            },
-          ],
-          posts: [],
-        };
-        const res = await api<{ imported: number; ids: number[] }>('/api/import', {
-          method: 'POST',
-          body: payload,
-        });
+        const res = await api<{ ids?: number[] }>('/api/import', { method: 'POST', body: payload });
         await refresh();
         const newId = res.ids?.[res.ids.length - 1] ?? null;
         if (newId) {
           setActiveId(newId);
           await loadCharacterData(newId);
         }
-        notify('角色已导入并还原');
+        notify('角色已导入（人设 + 记忆）');
         return characters.find((c) => c.id === newId) ?? null;
       } catch (e) {
         notify(errorMessage(e, '导入失败'), 'err');
@@ -1028,15 +1048,41 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     async (file: File) => {
       try {
         const text = await file.text();
-        const payload = JSON.parse(text);
-        const res = await api<{ imported: number }>('/api/import', { method: 'POST', body: payload });
+        const payload = parseJsonFile(text);
+
+        // 聊天记录：合并到当前角色
+        if (payload.spec === CHAT_SPEC) {
+          if (!active) {
+            notify('先选一个角色，再导入聊天记录', 'err');
+            return;
+          }
+          const msgs = Array.isArray(payload.messages) ? payload.messages : [];
+          if (!msgs.length) {
+            notify('这个文件里没有聊天记录', 'err');
+            return;
+          }
+          const res = await api<{ imported: number }>(`/api/import/chat/${active.id}`, {
+            method: 'POST',
+            body: { messages: msgs },
+          });
+          await loadCharacterData(active.id);
+          notify(`已把 ${res.imported} 条聊天记录合并进「${active.name}」`);
+          return;
+        }
+
+        const res = await api<{ imported: number; kind?: string }>('/api/import', {
+          method: 'POST',
+          body: payload,
+        });
         await refresh();
-        notify(`已导入 ${res.imported} 个角色`);
+        notify(
+          res.kind === 'card' ? '角色已导入（人设 + 记忆）' : `已导入 ${res.imported} 个角色`,
+        );
       } catch (e) {
-        notify(errorMessage(e, '备份文件无法导入'), 'err');
+        notify(errorMessage(e, '文件无法导入'), 'err');
       }
     },
-    [notify, refresh],
+    [active, loadCharacterData, notify, refresh],
   );
 
   const value: AppContextValue = {
@@ -1104,6 +1150,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     deletePost,
     toggleLike,
     exportCharacter,
+    exportChat,
     importCard,
     exportAll,
     importAll,
