@@ -190,7 +190,7 @@ export default function CharactersView() {
                 }`}
               >
                 <div className="flex items-center gap-3">
-                  <Avatar emoji={c.emoji} accent={c.accent} src={c.avatar_url} size={44} online />
+                  <Avatar emoji={c.emoji} accent={c.accent} src={c.avatar_url} size={44} />
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5">
                       <p className="truncate text-[14.5px] font-semibold text-fg">{c.name}</p>

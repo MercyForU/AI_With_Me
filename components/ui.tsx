@@ -28,7 +28,6 @@ export function Avatar({
   emoji,
   accent,
   size = 44,
-  online,
   ring,
   className = '',
   src,
@@ -36,7 +35,6 @@ export function Avatar({
   emoji: string;
   accent?: string | null;
   size?: number;
-  online?: boolean;
   ring?: boolean;
   className?: string;
   src?: string | null;
@@ -63,12 +61,6 @@ export function Avatar({
       ) : (
         <span style={{ transform: 'translateY(0.5px)' }}>{emoji}</span>
       )}
-      {online ? (
-        <span
-          className="absolute bottom-0 right-0 rounded-full border-2 border-ink bg-ok"
-          style={{ width: Math.max(9, size * 0.26), height: Math.max(9, size * 0.26) }}
-        />
-      ) : null}
     </div>
   );
 }

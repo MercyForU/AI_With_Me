@@ -233,7 +233,7 @@ export default function ChatView() {
                   selected ? 'bg-tint/[0.07]' : 'hover:bg-tint/[0.04]'
                 }`}
               >
-                <Avatar emoji={c.emoji} accent={c.accent} src={c.avatar_url} size={44} online />
+                <Avatar emoji={c.emoji} accent={c.accent} src={c.avatar_url} size={44} />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-1.5">
                     <p className="truncate text-[14px] font-semibold text-fg">{c.name}</p>
@@ -264,7 +264,7 @@ export default function ChatView() {
             >
               <IconBack size={20} />
             </button>
-            <Avatar emoji={active.emoji} accent={active.accent} src={active.avatar_url} size={38} online />
+            <Avatar emoji={active.emoji} accent={active.accent} src={active.avatar_url} size={38} />
             <div className="min-w-0 flex-1">
               <p className="flex items-center gap-1.5 truncate text-[15px] font-semibold text-fg">
                 {active.name}
