@@ -124,7 +124,7 @@ assets/              预设角色头像等静态素材
 
 **打包 Electron 时下载 Electron 二进制失败**：需要代理，设置 `HTTPS_PROXY` 后重试。
 
-**Windows 安装时提示「暧 无法正常关闭」**：安装程序要先结束正在运行的旧版本才能覆盖文件。
-0.1.1 起改成了按进程名强制清理（`build/installer.nsh`），一般不会再卡；
-如果仍然出现，通常是某个 `暧.exe` 以管理员身份在跑，任务管理器结束它再点「重试」即可。
-实在装不上可以直接用免安装版：`dist/win-unpacked/暧.exe`，不写注册表也不占安装目录。
+**Windows 安装包为什么一打开就弹 UAC**：安装方式是「为所有用户安装」（`nsis.perMachine: true`），
+需要管理员权限才能写 `Program Files` 和注册表，所以启动即提权——这是有意的，
+否则装到 `D:\Program Files` 这类目录会写不进去、也结束不掉正在运行的旧实例。
+不想提权就直接用免安装版：`dist/win-unpacked/暧.exe`。
