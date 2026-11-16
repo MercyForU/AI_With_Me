@@ -55,12 +55,15 @@ export function buildCardFile(
       importance: m.importance,
       created_at: m.created_at,
     })),
-    messages: messages.map((m) => ({
-      role: m.role,
-      content: m.content,
-      kind: m.kind,
-      created_at: m.created_at,
-    })),
+    // 上下文清空标记只是界面分隔，不进角色卡
+    messages: messages
+      .filter((m) => m.role === 'user' || m.role === 'assistant')
+      .map((m) => ({
+        role: m.role as 'user' | 'assistant',
+        content: m.content,
+        kind: m.kind,
+        created_at: m.created_at,
+      })),
     games: games.map((g) => ({
       game_key: g.game_key,
       result: g.result,

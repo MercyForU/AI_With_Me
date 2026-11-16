@@ -19,7 +19,7 @@ export type Character = {
   updated_at: string;
 };
 
-export type MessageRole = 'user' | 'assistant';
+export type MessageRole = 'user' | 'assistant' | 'system';
 export type MessageKind = 'text' | 'game' | 'system' | 'error' | 'image';
 
 export type Attachment = {

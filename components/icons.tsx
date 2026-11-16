@@ -182,6 +182,14 @@ export const IconEdit = (p: IconProps) => (
   </Svg>
 );
 
+/** 重新开始 / 清空上下文 */
+export const IconRefresh = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M20.5 12a8.5 8.5 0 1 1-2.6-6.1" />
+    <path d="M20.5 4.5V10h-5.5" />
+  </Svg>
+);
+
 export const IconSun = (p: IconProps) => (
   <Svg {...p}>
     <circle cx="12" cy="12" r="4" />

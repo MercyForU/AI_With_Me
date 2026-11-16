@@ -5,7 +5,7 @@ import { useApp } from '@/lib/store';
 import { createRecognizer, speak, sttSupported } from '@/lib/speech';
 import { assetUrl } from '@/lib/base';
 import { accentGradient, type Character, type Message } from '@/lib/types';
-import { Avatar, EmptyState, SettingsButton } from './ui';
+import { Avatar, EmptyState, Modal, SettingsButton } from './ui';
 import {
   IconBack,
   IconChat,
@@ -16,6 +16,7 @@ import {
   IconMemory,
   IconMic,
   IconPlus,
+  IconRefresh,
   IconSend,
   IconSparkle,
   IconSpeaker,
@@ -64,6 +65,7 @@ export default function ChatView() {
     openSettings,
     user,
     memoryStats,
+    resetContext,
     notify,
   } = useApp();
 
@@ -71,6 +73,8 @@ export default function ChatView() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [showInfo, setShowInfo] = useState(false);
   const [gameOpen, setGameOpen] = useState(false);
+  const [clearOpen, setClearOpen] = useState(false);
+  const [clearing, setClearing] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [archived, setArchived] = useState(0);
   const [listening, setListening] = useState(false);
@@ -285,6 +289,15 @@ export default function ChatView() {
               </div>
             </div>
             <button
+              onClick={() => setClearOpen(true)}
+              disabled={streaming}
+              className="rounded-full border border-line p-2 text-fg-dim transition hover:border-line-strong hover:text-fg disabled:opacity-40"
+              title="清空上下文"
+              aria-label="清空上下文"
+            >
+              <IconRefresh size={17} />
+            </button>
+            <button
               onClick={() => setGameOpen(true)}
               className="rounded-full border border-line p-2 text-fg-dim transition hover:border-line-strong hover:text-fg"
               title="约一局小游戏"
@@ -389,7 +402,16 @@ export default function ChatView() {
                         {timeLabel(m.created_at)}
                       </div>
                     ) : null}
-                    {m.kind === 'error' ? (
+                    {m.kind === 'system' ? (
+                      <div className="my-5 flex items-center gap-3 text-[10.5px] text-fg-dimmer">
+                        <span className="h-px flex-1 bg-line" />
+                        <span className="flex shrink-0 items-center gap-1">
+                          <IconRefresh size={11} />
+                          上下文已清空
+                        </span>
+                        <span className="h-px flex-1 bg-line" />
+                      </div>
+                    ) : m.kind === 'error' ? (
                       <div className="my-2 rounded-xl border border-danger/30 bg-danger/[0.07] px-3 py-2.5 text-[12px] leading-relaxed text-danger">
                         <p className="mb-1 font-medium">回复失败</p>
                         <p className="whitespace-pre-wrap break-words text-[11.5px] opacity-90">{m.content}</p>
@@ -606,6 +628,32 @@ export default function ChatView() {
           ) : null}
         </>
       ) : null}
+
+      <Modal
+        open={clearOpen}
+        onClose={() => setClearOpen(false)}
+        title="清空上下文？"
+        subtitle="之后的消息只带人设和长期记忆从头开始，界面上的聊天记录不会删除，随时能往上翻。"
+      >
+        <div className="flex gap-2">
+          <button
+            onClick={async () => {
+              if (!active) return;
+              setClearing(true);
+              const ok = await resetContext(active.id);
+              setClearing(false);
+              if (ok) setClearOpen(false);
+            }}
+            disabled={clearing}
+            className="flex-1 rounded-full bg-brand/90 py-2.5 text-[13px] font-semibold text-white disabled:opacity-60"
+          >
+            {clearing ? '处理中…' : '清空并重新开始'}
+          </button>
+          <button onClick={() => setClearOpen(false)} className="btn-ghost flex-1">
+            取消
+          </button>
+        </div>
+      </Modal>
 
       <RpsGame
         open={gameOpen}

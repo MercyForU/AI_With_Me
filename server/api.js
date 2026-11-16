@@ -718,6 +718,17 @@ async function handle(req, res, url) {
     }
   }
 
+  // 清空上下文：插一条 system 标记，之后的对话只带这个标记之后的消息。
+  // 历史记录不删——界面照旧能往上翻，只是模型那边重新开始。
+  match = m(/^\/api\/characters\/(\d+)\/context$/);
+  if (match && method === 'POST') {
+    const id = Number(match[1]);
+    if (!getCharacter(id)) return json(res, 404, { error: '角色不存在' });
+    const marker = insertMessage(id, 'system', '', 'system');
+    setSetting(`ctx_from_${id}`, String(marker.id));
+    return json(res, 200, { message: marker, from: marker.id });
+  }
+
   match = m(/^\/api\/characters\/(\d+)\/data$/);
   if (match && method === 'GET') {
     const id = Number(match[1]);
@@ -861,7 +872,9 @@ async function handle(req, res, url) {
     });
     const send = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
 
-    const history = listMessages(id, 20);
+    // 清空过上下文的话，只用标记之后的消息拼上下文，人设与记忆照旧
+    const ctxFrom = Number(getSetting(`ctx_from_${id}`, '0')) || 0;
+    const history = listMessages(id, 60).filter((m) => m.id > ctxFrom);
     const userMessage = insertMessage(id, 'user', input, 'text');
     send({ event: 'user', message: userMessage });
 

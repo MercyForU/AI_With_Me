@@ -508,6 +508,16 @@ export async function handle(
     }
   }
 
+  // 清空上下文：插一条 system 标记，之后只带标记之后的消息，历史记录不删
+  m = path.match(/^\/api\/characters\/(\d+)\/context$/);
+  if (m && method === 'POST') {
+    const id = Number(m[1]);
+    if (!(await getCharacter(id))) return fail(404, '角色不存在');
+    const marker = await insertMessage(id, 'system', '', 'system');
+    await setSetting(`ctx_from_${id}`, String(marker.id));
+    return ok({ message: marker, from: marker.id });
+  }
+
   m = path.match(/^\/api\/characters\/(\d+)\/data$/);
   if (m) {
     const id = Number(m[1]);
@@ -649,7 +659,9 @@ export async function runChat(
     return;
   }
 
-  const history = await listMessages(characterId, 20);
+  // 清空过上下文的话，只用标记之后的消息拼上下文，人设与记忆照旧
+  const ctxFrom = Number(await getSetting(`ctx_from_${characterId}`, '0')) || 0;
+  const history = (await listMessages(characterId, 60)).filter((m) => m.id > ctxFrom);
   const userMessage = await insertMessage(characterId, 'user', input.trim(), 'text');
   handlers.onUser?.(userMessage);
 

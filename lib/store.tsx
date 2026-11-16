@@ -121,6 +121,8 @@ export type AppContextValue = {
   deleteCharacter: (id: number) => Promise<void>;
   sendMessage: (text: string) => Promise<void>;
   stopStreaming: () => void;
+  /** 清空上下文：之后的消息只带人设 + 召回记忆 + 新消息，历史记录不删 */
+  resetContext: (characterId: number) => Promise<boolean>;
   addMemory: (characterId: number, content: string) => Promise<void>;
   removeMemory: (memoryId: number, characterId: number) => Promise<void>;
   createPost: (characterId: number) => Promise<void>;
@@ -666,6 +668,24 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const stopStreaming = useCallback(() => abortRef.current?.abort(), []);
 
+  const resetContext = useCallback(
+    async (characterId: number) => {
+      try {
+        const r = await api<{ message: Message }>(`/api/characters/${characterId}/context`, { method: 'POST' });
+        setMessages((prev) => ({
+          ...prev,
+          [characterId]: [...(prev[characterId] ?? []), r.message],
+        }));
+        notify('已清空上下文，下一条消息重新开始');
+        return true;
+      } catch (e) {
+        notify(errorMessage(e, '清空失败'), 'err');
+        return false;
+      }
+    },
+    [notify],
+  );
+
   const sendMessage = useCallback(
     async (text: string) => {
       const content = text.trim();
@@ -1020,6 +1040,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     deleteCharacter,
     sendMessage,
     stopStreaming,
+    resetContext,
     addMemory,
     removeMemory,
     createPost,
