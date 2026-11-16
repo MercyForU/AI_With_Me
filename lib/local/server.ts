@@ -37,6 +37,7 @@ import * as memory from './memory';
 import { buildContext, buildSystemPrompt, POST_PROMPT, POST_SYSTEM } from './prompt';
 import { chatOnce, chatProbe, chatStream, listModels, type ChatMessage } from './llm';
 import { compressDataUrl, generateImage } from './image';
+import * as games from './games';
 
 export type ApiResult = { status: number; data: unknown };
 
@@ -450,7 +451,7 @@ export async function handle(
     const cid = Number(body.characterId) || 0;
     const c = await getCharacter(cid);
     if (!c) return fail(404, '角色不存在');
-    return ok(await memory.ingest(cid, c.name, true));
+    return ok(await memory.ingest(cid, c.name, { force: true }));
   }
 
   // ---- 图片上传（头像） ----
@@ -515,7 +516,9 @@ export async function handle(
     if (!(await getCharacter(id))) return fail(404, '角色不存在');
     const marker = await insertMessage(id, 'system', '', 'system');
     await setSetting(`ctx_from_${id}`, String(marker.id));
-    return ok({ message: marker, from: marker.id });
+    // 还没滑出窗口的这一段，趁清空前压成记忆
+    memory.ingest(id, (await getCharacter(id))!.name, { force: true, flush: true }).catch(() => {});
+    return ok({ message: marker, from: marker.id, archiving: true });
   }
 
   m = path.match(/^\/api\/characters\/(\d+)\/data$/);
@@ -554,6 +557,57 @@ export async function handle(
   if (m && method === 'DELETE') {
     await run('DELETE FROM memories WHERE id = ?', [Number(m[1])]);
     return ok({ ok: true });
+  }
+
+  // ---- 小游戏 ----
+  if (path === '/api/game/move' && method === 'POST') {
+    const c = await getCharacter(Number(body.characterId));
+    if (!c) return fail(404, '角色不存在');
+    const game = body.game === 'gomoku' ? 'gomoku' : 'rps';
+    const state = (body.state && typeof body.state === 'object' ? body.state : {}) as Record<string, unknown>;
+    if (game === 'gomoku' && !Array.isArray(state.board)) return fail(400, '缺少棋盘');
+    try {
+      return ok(
+        await games.decide({
+          character: c,
+          game,
+          state,
+          userName: await getSetting('display_name', '我'),
+        }),
+      );
+    } catch (e) {
+      return fail(502, (e as Error).message || '这一手没想出来');
+    }
+  }
+
+  if (path === '/api/game/finish' && method === 'POST') {
+    const id = Number(body.characterId);
+    const c = await getCharacter(id);
+    if (!c) return fail(404, '角色不存在');
+    const game = body.game === 'gomoku' ? 'gomoku' : 'rps';
+    const result = (['win', 'lose', 'draw'].includes(String(body.result)) ? body.result : 'draw') as
+      | 'win'
+      | 'lose'
+      | 'draw';
+    const note = str(body.note, 200);
+    try {
+      const { factual, line } = await games.finish({
+        character: c,
+        game,
+        result,
+        note,
+        userName: await getSetting('display_name', '我'),
+      });
+      await run(
+        'INSERT INTO game_records (character_id, game_key, result, summary, created_at) VALUES (?, ?, ?, ?, ?)',
+        [id, game, result, factual, now()],
+      );
+      const message = await insertMessage(id, 'assistant', line, 'text');
+      await memory.insertChunk(id, factual, { source: 'game' }).catch(() => {});
+      return ok({ line, summary: factual, message });
+    } catch (e) {
+      return fail(502, (e as Error).message || '总结失败');
+    }
   }
 
   m = path.match(/^\/api\/characters\/(\d+)\/games$/);
@@ -641,14 +695,17 @@ export async function runChat(
   characterId: number,
   input: string,
   handlers: ChatHandlers,
+  opts: { persistUser?: boolean } = {},
 ): Promise<void> {
+  // persistUser = false 时，消息已经先落库了（防抖合并），这里只负责生成
+  const persistUser = opts.persistUser !== false;
   await ensureReady();
   const c = await getCharacter(characterId);
   if (!c) {
     handlers.onError?.('角色不存在');
     return;
   }
-  if (!input.trim()) {
+  if (!input.trim() && persistUser) {
     handlers.onError?.('内容为空');
     return;
   }
@@ -662,8 +719,10 @@ export async function runChat(
   // 清空过上下文的话，只用标记之后的消息拼上下文，人设与记忆照旧
   const ctxFrom = Number(await getSetting(`ctx_from_${characterId}`, '0')) || 0;
   const history = (await listMessages(characterId, 60)).filter((m) => m.id > ctxFrom);
-  const userMessage = await insertMessage(characterId, 'user', input.trim(), 'text');
-  handlers.onUser?.(userMessage);
+  if (persistUser) {
+    const userMessage = await insertMessage(characterId, 'user', input.trim(), 'text');
+    handlers.onUser?.(userMessage);
+  }
 
   try {
     const relax = memory.wantsRecall(input);
@@ -683,12 +742,14 @@ export async function runChat(
     const systemPrompt = buildSystemPrompt(c, await listMemories(characterId), recalled, {
       draw: drawMode,
       memoryTools: toolOk,
+      userName: await getSetting('display_name', '我'),
     });
     const conversation: ChatMessage[] = [
       { role: 'system', content: systemPrompt },
       ...buildContext(history),
-      { role: 'user', content: input.trim() },
     ];
+    // 消息已经落库时就不再补一条，history 末尾就是刚发的那几句
+    if (persistUser) conversation.push({ role: 'user', content: input.trim() });
 
     // 工具循环：模型可以先查记忆/记东西，再开口
     let preText = '';

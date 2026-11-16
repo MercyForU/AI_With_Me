@@ -10,6 +10,7 @@ const SOURCE_LABEL: Record<string, string> = {
   chat: '自动归档',
   manual: '我写的',
   model: '她记的',
+  game: '一起玩的',
 };
 
 function dayLabel(iso?: string) {

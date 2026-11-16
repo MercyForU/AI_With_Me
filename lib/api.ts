@@ -76,12 +76,14 @@ export type ChatStreamHandlers = {
  * 返回完整文本（服务端已落库，这里只负责渲染）。
  */
 export async function streamChat(
-  payload: { characterId: number; input: string },
+  payload: { characterId: number; input: string; persistUser?: boolean },
   handlers: ChatStreamHandlers,
   signal?: AbortSignal,
 ): Promise<void> {
   if (isNativeApp()) {
-    await localChat(payload.characterId, payload.input, handlers);
+    await localChat(payload.characterId, payload.input, handlers, {
+      persistUser: payload.persistUser !== false,
+    });
     return;
   }
 

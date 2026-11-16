@@ -22,7 +22,7 @@ import {
   IconSpeaker,
   IconStop,
 } from './icons';
-import RpsGame from './RpsGame';
+import GameHub from './GameHub';
 
 function timeLabel(iso: string) {
   const d = new Date(iso);
@@ -54,6 +54,7 @@ export default function ChatView() {
     games,
     streaming,
     streamingText,
+    pendingReply,
     sendMessage,
     stopStreaming,
     models,
@@ -284,7 +285,7 @@ export default function ChatView() {
                   <span className="shrink-0 opacity-70">▾</span>
                 </button>
                 <span className="shrink-0 truncate">
-                  {streaming ? '正在输入…' : `手记 ${memList.length} 条`}
+                  {streaming || pendingReply ? '正在输入…' : `手记 ${memList.length} 条`}
                 </span>
               </div>
             </div>
@@ -486,7 +487,7 @@ export default function ChatView() {
                 );
               })}
 
-              {streaming ? (
+              {streaming || pendingReply ? (
                 <div className="flex items-end gap-2">
                   <Avatar emoji={active.emoji} accent={active.accent} src={active.avatar_url} size={28} />
                   <div className="max-w-[78%] whitespace-pre-wrap break-words rounded-2xl rounded-bl-md border border-line bg-raise/80 px-3.5 py-2.5 text-[14px] leading-[1.55] text-fg">
@@ -655,11 +656,7 @@ export default function ChatView() {
         </div>
       </Modal>
 
-      <RpsGame
-        open={gameOpen}
-        character={active}
-        onClose={() => setGameOpen(false)}
-      />
+      <GameHub open={gameOpen} character={active} onClose={() => setGameOpen(false)} />
     </div>
   );
 }

@@ -15,7 +15,7 @@ export function buildSystemPrompt(
   character: PromptCharacter,
   memories: Array<{ content: string }> = [],
   recalled: Array<{ content: string; createdAt?: string }> = [],
-  opts: { draw?: 'marker' | 'tool' | null; memoryTools?: boolean } = {},
+  opts: { draw?: 'marker' | 'tool' | null; memoryTools?: boolean; userName?: string } = {},
 ): string {
   const lines: string[] = [];
   lines.push(`你正在扮演一位名叫「${character.name}」的AI陪伴角色，与用户一对一私聊。`);
@@ -23,6 +23,11 @@ export function buildSystemPrompt(
   if (character.personality) lines.push(`人格设定：${character.personality}`);
   if (character.scenario) lines.push(`背景与你们的关系：${character.scenario}`);
   if (character.memory_note) lines.push(`你必须记住的事：${character.memory_note}`);
+  if (opts.userName) {
+    lines.push(
+      `正在和你聊天的这个人叫「${opts.userName}」。需要称呼的时候直接叫这个名字（或者你自己起的亲昵称呼），不要叫「用户」「对方」。`,
+    );
+  }
   if (memories.length) {
     lines.push(
       `你记得关于对方的这些细节（自然地在合适的时候提起，不要生硬罗列）：\n${memories

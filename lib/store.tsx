@@ -27,6 +27,9 @@ import type {
   RebuildState,
 } from './types';
 
+/** 连发合并的等待窗口：这段时间内继续发，算同一轮对话 */
+const DEBOUNCE_MS = 2000;
+
 type Toast = { id: number; text: string; tone: 'ok' | 'err' };
 
 type Bootstrap = {
@@ -80,6 +83,8 @@ export type AppContextValue = {
   closeMemoryPanel: () => void;
 
   streaming: boolean;
+  /** 消息已发出，正在等用户把话说完（防抖窗口内） */
+  pendingReply: boolean;
   streamingText: string;
   loadingChar: boolean;
   toasts: Toast[];
@@ -121,6 +126,8 @@ export type AppContextValue = {
   deleteCharacter: (id: number) => Promise<void>;
   sendMessage: (text: string) => Promise<void>;
   stopStreaming: () => void;
+  /** 往当前角色的消息列表里补一条（游戏结束语等外部写入） */
+  pushMessage: (msg: Message) => void;
   /** 清空上下文：之后的消息只带人设 + 召回记忆 + 新消息，历史记录不删 */
   resetContext: (characterId: number) => Promise<boolean>;
   addMemory: (characterId: number, content: string) => Promise<void>;
@@ -128,7 +135,6 @@ export type AppContextValue = {
   createPost: (characterId: number) => Promise<void>;
   deletePost: (postId: number) => Promise<void>;
   toggleLike: (postId: number) => Promise<void>;
-  recordGame: (characterId: number, result: 'win' | 'lose' | 'draw', summary: string) => Promise<void>;
   exportCharacter: (id: number) => Promise<void>;
   importCard: (text: string) => Promise<Character | null>;
   exportAll: () => Promise<void>;
@@ -182,6 +188,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     characterId: null,
   });
   const abortRef = useRef<AbortController | null>(null);
+  const streamingRef = useRef(false);
+  // 连发合并：攒一小会儿再让模型回
+  const pendingRef = useRef<{
+    characterId: number;
+    texts: string[];
+    timer: ReturnType<typeof setTimeout> | 0;
+  } | null>(null);
+  const [pendingReply, setPendingReply] = useState(false);
 
   const notify = useCallback((text: string, tone: 'ok' | 'err' = 'ok') => {
     const id = Date.now() + Math.random();
@@ -666,7 +680,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     [notify],
   );
 
-  const stopStreaming = useCallback(() => abortRef.current?.abort(), []);
+  const stopStreaming = useCallback(() => {
+    // 还在攒的连发消息也一并取消
+    const q = pendingRef.current;
+    if (q && q.timer) clearTimeout(q.timer);
+    pendingRef.current = null;
+    setPendingReply(false);
+    abortRef.current?.abort();
+  }, []);
 
   const resetContext = useCallback(
     async (characterId: number) => {
@@ -686,28 +707,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     [notify],
   );
 
-  const sendMessage = useCallback(
-    async (text: string) => {
-      const content = text.trim();
-      if (!content || !active || streaming) return;
-
-      if (!currentModelOption) {
-        notify('还没有可用的模型，请先在设置里添加供应商', 'err');
-        setSettingsOpen(true);
-        return;
-      }
-
-      const character = active;
-      const tempId = -Date.now();
-      const optimistic: Message = {
-        id: tempId,
-        character_id: character.id,
-        role: 'user',
-        content,
-        kind: 'text',
-        created_at: new Date().toISOString(),
-      };
-      setMessages((prev) => ({ ...prev, [character.id]: [...(prev[character.id] ?? []), optimistic] }));
+  /** 真正跑一轮回复：上下文已经在库里，不再插入用户消息 */
+  const runReply = useCallback(
+    async (characterId: number, text: string) => {
+      if (streamingRef.current) return;
+      streamingRef.current = true;
       setStreaming(true);
       setStreamingText('');
 
@@ -715,36 +719,29 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       abortRef.current = controller;
       let failed = '';
 
+      const patch = (fn: (list: Message[]) => Message[]) =>
+        setMessages((prev) => ({ ...prev, [characterId]: fn(prev[characterId] ?? []) }));
+
       try {
         await streamChat(
-          { characterId: character.id, input: content },
+          { characterId, input: text, persistUser: false },
           {
-            onUser: (msg) => {
-              const saved = msg as Message;
-              setMessages((prev) => ({
-                ...prev,
-                [character.id]: (prev[character.id] ?? []).map((m) => (m.id === tempId ? saved : m)),
-              }));
-            },
             onDelta: (t) => setStreamingText((prev) => prev + t),
             onAssistant: (msg, meta) => {
               const saved = msg as Message;
-              setMessages((prev) => ({ ...prev, [character.id]: [...(prev[character.id] ?? []), saved] }));
+              patch((list) => [...list, saved]);
               setStreamingText('');
               if (meta.level !== undefined && meta.affinity !== undefined) {
                 setCharacters((prev) =>
                   prev.map((c) =>
-                    c.id === character.id
+                    c.id === characterId
                       ? { ...c, affinity: meta.affinity!, relationship_level: meta.level! }
                       : c,
                   ),
                 );
               }
             },
-            onImage: (msg) => {
-              const saved = msg as Message;
-              setMessages((prev) => ({ ...prev, [character.id]: [...(prev[character.id] ?? []), saved] }));
-            },
+            onImage: (msg) => patch((list) => [...list, msg as Message]),
             onError: (m) => {
               failed = m;
             },
@@ -760,35 +757,109 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       } finally {
         if (failed && failed !== '已停止生成') {
           const errId = -Date.now() - 1;
-          setMessages((prev) => ({
-            ...prev,
-            [character.id]: [
-              ...(prev[character.id] ?? []).filter((m) => m.id !== tempId),
-              {
-                id: errId,
-                character_id: character.id,
-                role: 'assistant',
-                content: failed,
-                kind: 'error',
-                created_at: new Date().toISOString(),
-              },
-            ],
-          }));
+          patch((list) => [
+            ...list,
+            {
+              id: errId,
+              character_id: characterId,
+              role: 'assistant',
+              content: failed,
+              kind: 'error',
+              created_at: new Date().toISOString(),
+            },
+          ]);
           notify('回复失败，详情见对话里', 'err');
         } else if (failed) {
-          setMessages((prev) => ({
-            ...prev,
-            [character.id]: (prev[character.id] ?? []).filter((m) => m.id !== tempId),
-          }));
           notify('已停止生成');
         }
         abortRef.current = null;
+        streamingRef.current = false;
         setStreaming(false);
         setStreamingText('');
+        setPendingReply(false);
       }
     },
-    [active, currentModelOption, notify, streaming],
+    [notify],
   );
+
+  /**
+   * 发消息：每条立刻落库上屏，然后等 2 秒看还有没有下文。
+   * 很多人的习惯是一条话拆成几段发，攒成一轮再回复才像真人对话。
+   */
+  const sendMessage = useCallback(
+    async (text: string) => {
+      const content = text.trim();
+      if (!content || !active || streaming) return;
+
+      if (!currentModelOption) {
+        notify('还没有可用的模型，请先在设置里添加供应商', 'err');
+        setSettingsOpen(true);
+        return;
+      }
+
+      const characterId = active.id;
+      const tempId = -Date.now();
+      setMessages((prev) => ({
+        ...prev,
+        [characterId]: [
+          ...(prev[characterId] ?? []),
+          {
+            id: tempId,
+            character_id: characterId,
+            role: 'user',
+            content,
+            kind: 'text',
+            created_at: new Date().toISOString(),
+          },
+        ],
+      }));
+
+      try {
+        const r = await api<{ message: Message }>(`/api/characters/${characterId}/messages`, {
+          method: 'POST',
+          body: { role: 'user', content, kind: 'text' },
+        });
+        setMessages((prev) => ({
+          ...prev,
+          [characterId]: (prev[characterId] ?? []).map((m) => (m.id === tempId ? r.message : m)),
+        }));
+      } catch (e) {
+        setMessages((prev) => ({
+          ...prev,
+          [characterId]: (prev[characterId] ?? []).filter((m) => m.id !== tempId),
+        }));
+        notify(errorMessage(e, '发送失败'), 'err');
+        return;
+      }
+
+      // 同一角色、DEBOUNCE_MS 内的连发算同一轮
+      const prevQueue = pendingRef.current;
+      const queue =
+        prevQueue && prevQueue.characterId === characterId
+          ? prevQueue
+          : { characterId, texts: [] as string[], timer: 0 as unknown as ReturnType<typeof setTimeout> };
+      queue.texts.push(content);
+      if (queue.timer) clearTimeout(queue.timer);
+      setPendingReply(true);
+      queue.timer = setTimeout(() => {
+        const joined = queue.texts.join('\n');
+        queue.texts = [];
+        queue.timer = 0 as unknown as ReturnType<typeof setTimeout>;
+        pendingRef.current = null;
+        void runReply(characterId, joined);
+      }, DEBOUNCE_MS);
+      pendingRef.current = queue;
+    },
+    [active, currentModelOption, notify, runReply, streaming],
+  );
+
+  const pushMessage = useCallback((msg: Message) => {
+    setMessages((prev) => {
+      const list = prev[msg.character_id] ?? [];
+      if (list.some((m) => m.id === msg.id)) return prev;
+      return { ...prev, [msg.character_id]: [...list, msg] };
+    });
+  }, []);
 
   const addMemory = useCallback(
     async (characterId: number, content: string) => {
@@ -871,22 +942,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       }
     },
     [notify, posts],
-  );
-
-  const recordGame = useCallback(
-    async (characterId: number, result: 'win' | 'lose' | 'draw', summary: string) => {
-      try {
-        const data = await api<{ game: GameRecord; message: Message }>(
-          `/api/characters/${characterId}/games`,
-          { method: 'POST', body: { result, summary } },
-        );
-        setGames((prev) => ({ ...prev, [characterId]: [data.game, ...(prev[characterId] ?? [])] }));
-        setMessages((prev) => ({ ...prev, [characterId]: [...(prev[characterId] ?? []), data.message] }));
-      } catch (e) {
-        notify(errorMessage(e, '记录对局失败'), 'err');
-      }
-    },
-    [notify],
   );
 
   const exportCharacter = useCallback(
@@ -1014,6 +1069,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     openMemoryPanel,
     closeMemoryPanel,
     streaming,
+    pendingReply,
     streamingText,
     loadingChar,
     toasts,
@@ -1041,12 +1097,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     sendMessage,
     stopStreaming,
     resetContext,
+    pushMessage,
     addMemory,
     removeMemory,
     createPost,
     deletePost,
     toggleLike,
-    recordGame,
     exportCharacter,
     importCard,
     exportAll,

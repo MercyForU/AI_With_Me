@@ -34,9 +34,10 @@ function lastChunkedId(characterId) {
 }
 
 /** 待分块的消息：id 落在 (lastChunked, maxId - WINDOW] 区间 */
-function pendingMessages(characterId) {
+function pendingMessages(characterId, opts = {}) {
   const maxId = maxMessageId(characterId);
-  const cutoff = maxId - WINDOW;
+  // flush = 清空上下文前把还没滑出窗口的也一起归档
+  const cutoff = opts.flush ? maxId : maxId - WINDOW;
   if (cutoff <= 0) return [];
   const from = lastChunkedId(characterId);
   if (cutoff <= from) return [];
@@ -64,11 +65,11 @@ function bufferToVector(buf) {
  * @returns {{created:number, embedded:number, skipped:number}}
  */
 async function ingest(characterId, characterName, opts = {}) {
-  const msgs = pendingMessages(characterId);
+  const msgs = pendingMessages(characterId, { flush: Boolean(opts.flush) });
   if (!msgs.length) return { created: 0, embedded: 0, skipped: 0 };
   // 攒够一批再切，否则每次回复后只挤出一条，块会碎成一句话一块
   const MIN_BATCH = 6;
-  if (!opts.force && msgs.length < MIN_BATCH) {
+  if (!opts.force && !opts.flush && msgs.length < MIN_BATCH) {
     return { created: 0, embedded: 0, skipped: 0, waiting: MIN_BATCH - msgs.length };
   }
 
@@ -168,7 +169,7 @@ async function insertChunk(characterId, content, opts = {}) {
   }
 
   const id = require('node:crypto').randomUUID();
-  const source = opts.source === 'model' ? 'model' : 'manual';
+  const source = ['model', 'game'].includes(opts.source) ? opts.source : 'manual';
   db.prepare(
     `INSERT INTO memory_chunks
       (id, character_id, session_id, content, embed_text, msg_from, msg_to, token_count, content_hash,

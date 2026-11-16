@@ -11,6 +11,7 @@ const providers = require('./providers');
 const memory = require('./memory');
 const memorySearch = require('./memory/search');
 const memoryTools = require('./memory/tools');
+const games = require('./games');
 const embedding = require('./embedding');
 const rebuild = require('./memory/rebuild');
 const { buildSystemPrompt, buildContext, POST_SYSTEM, POST_PROMPT } = require('./prompt');
@@ -723,10 +724,15 @@ async function handle(req, res, url) {
   match = m(/^\/api\/characters\/(\d+)\/context$/);
   if (match && method === 'POST') {
     const id = Number(match[1]);
-    if (!getCharacter(id)) return json(res, 404, { error: '角色不存在' });
+    const c = getCharacter(id);
+    if (!c) return json(res, 404, { error: '角色不存在' });
     const marker = insertMessage(id, 'system', '', 'system');
     setSetting(`ctx_from_${id}`, String(marker.id));
-    return json(res, 200, { message: marker, from: marker.id });
+    // 还没滑出窗口的这一段，趁清空前压成记忆，别白丢
+    memory.ingest(id, c.name, { force: true, flush: true }).catch((e) => {
+      console.warn('[memory] 清空上下文时归档失败：', e.message);
+    });
+    return json(res, 200, { message: marker, from: marker.id, archiving: true });
   }
 
   match = m(/^\/api\/characters\/(\d+)\/data$/);
@@ -770,6 +776,81 @@ async function handle(req, res, url) {
   if (match && method === 'DELETE') {
     db.prepare('DELETE FROM memories WHERE id = ?').run(Number(match[1]));
     return json(res, 200, { ok: true });
+  }
+
+  // 单独写一条消息（防抖时先把每条都落库上屏，再统一生成回复）
+  match = m(/^\/api\/characters\/(\d+)\/messages$/);
+  if (match && method === 'POST') {
+    const id = Number(match[1]);
+    const body = await readBody(req);
+    if (!getCharacter(id)) return json(res, 404, { error: '角色不存在' });
+    const role = body.role === 'assistant' ? 'assistant' : 'user';
+    const content = str(body.content, 8000).trim();
+    if (!content) return json(res, 400, { error: '内容为空' });
+    return json(res, 200, {
+      message: insertMessage(id, role, content, str(body.kind, 20) || 'text'),
+    });
+  }
+
+  // ===== 小游戏 =====
+  if (path === '/api/game/move' && method === 'POST') {
+    const body = await readBody(req);
+    const c = getCharacter(Number(body.characterId));
+    if (!c) return json(res, 404, { error: '角色不存在' });
+    const game = body.game === 'gomoku' ? 'gomoku' : 'rps';
+    const state = body.state && typeof body.state === 'object' ? body.state : {};
+    if (game === 'gomoku' && !Array.isArray(state.board)) {
+      return json(res, 400, { error: '缺少棋盘' });
+    }
+    try {
+      const r = await games.decide({
+        character: c,
+        game,
+        state,
+        userName: getSetting('display_name', '我'),
+        llm,
+        providers,
+      });
+      return json(res, 200, r);
+    } catch (e) {
+      return json(res, 502, { error: e.message || '这一手没想出来' });
+    }
+  }
+
+  if (path === '/api/game/finish' && method === 'POST') {
+    const body = await readBody(req);
+    const id = Number(body.characterId);
+    const c = getCharacter(id);
+    if (!c) return json(res, 404, { error: '角色不存在' });
+    const game = body.game === 'gomoku' ? 'gomoku' : 'rps';
+    const result = ['win', 'lose', 'draw'].includes(body.result) ? body.result : 'draw';
+    const note = str(body.note, 200);
+    try {
+      const { factual, line } = await games.finish({
+        character: c,
+        game,
+        result,
+        note,
+        userName: getSetting('display_name', '我'),
+        llm,
+        providers,
+      });
+      db.prepare('INSERT INTO game_records (character_id, game_key, result, summary, created_at) VALUES (?, ?, ?, ?, ?)').run(
+        id,
+        game,
+        result,
+        factual,
+        now(),
+      );
+      const message = insertMessage(id, 'assistant', line, 'text');
+      // 这一局进记忆，之后她会记得
+      await memory.insertChunk(id, factual, { source: 'game' }).catch((e) => {
+        console.warn('[game] 记进记忆失败：', e.message);
+      });
+      return json(res, 200, { line, summary: factual, message });
+    } catch (e) {
+      return json(res, 502, { error: e.message || '总结失败' });
+    }
   }
 
   match = m(/^\/api\/characters\/(\d+)\/games$/);
@@ -852,9 +933,11 @@ async function handle(req, res, url) {
     const body = await readBody(req);
     const id = Number(body.characterId);
     const input = str(body.input, 8000).trim();
+    // 防抖模式：消息已经先落库了（连发几条合成一轮），这里只负责生成
+    const persistUser = body.persistUser !== false;
     const c = getCharacter(id);
     if (!c) return json(res, 404, { error: '角色不存在' });
-    if (!input) return json(res, 400, { error: '内容为空' });
+    if (persistUser && !input) return json(res, 400, { error: '内容为空' });
 
     const resolved = providers.resolveForChat();
     if (!resolved) {
@@ -875,8 +958,10 @@ async function handle(req, res, url) {
     // 清空过上下文的话，只用标记之后的消息拼上下文，人设与记忆照旧
     const ctxFrom = Number(getSetting(`ctx_from_${id}`, '0')) || 0;
     const history = listMessages(id, 60).filter((m) => m.id > ctxFrom);
-    const userMessage = insertMessage(id, 'user', input, 'text');
-    send({ event: 'user', message: userMessage });
+    if (persistUser) {
+      const userMessage = insertMessage(id, 'user', input, 'text');
+      send({ event: 'user', message: userMessage });
+    }
 
     try {
       // 用户明说「以前/上次/前几天」时放宽召回：这类问题靠的是时间线，不是字面相似度
@@ -899,12 +984,14 @@ async function handle(req, res, url) {
       const systemPrompt = buildSystemPrompt(c, listMemories(id), recalled, {
         draw: drawMode,
         memoryTools: toolOk,
+        userName: getSetting('display_name', '我'),
       });
       const conversation = [
         { role: 'system', content: systemPrompt },
         ...buildContext(history),
-        { role: 'user', content: input },
       ];
+      // 消息已经落库时不再补一条，history 末尾就是刚发的那几句
+      if (persistUser) conversation.push({ role: 'user', content: input });
 
       // 工具循环：模型可能先查记忆/记东西，再开口说话。
       // 最多两轮，避免模型在工具里绕不出来。

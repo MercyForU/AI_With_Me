@@ -136,9 +136,13 @@ export async function lastChunkedId(characterId: number): Promise<number> {
   return row[0]?.m || 0;
 }
 
-export async function pendingMessages(characterId: number): Promise<MessageRow[]> {
+export async function pendingMessages(
+  characterId: number,
+  opts: { flush?: boolean } = {},
+): Promise<MessageRow[]> {
   const maxId = await maxMessageId(characterId);
-  const cutoff = maxId - WINDOW;
+  // flush = 清空上下文前，把还没滑出窗口的也一起归档
+  const cutoff = opts.flush ? maxId : maxId - WINDOW;
   if (cutoff <= 0) return [];
   const from = await lastChunkedId(characterId);
   if (cutoff <= from) return [];
@@ -206,10 +210,16 @@ function buildChunks(msgs: MessageRow[], characterName: string): Chunk[] {
   return out;
 }
 
-export async function ingest(characterId: number, characterName: string, force = false) {
-  const msgs = await pendingMessages(characterId);
+export async function ingest(
+  characterId: number,
+  characterName: string,
+  opts: { force?: boolean; flush?: boolean } = {},
+) {
+  const msgs = await pendingMessages(characterId, { flush: opts.flush });
   if (!msgs.length) return { created: 0, skipped: 0 };
-  if (!force && msgs.length < MIN_BATCH) return { created: 0, skipped: 0, waiting: MIN_BATCH - msgs.length };
+  if (!opts.force && !opts.flush && msgs.length < MIN_BATCH) {
+    return { created: 0, skipped: 0, waiting: MIN_BATCH - msgs.length };
+  }
 
   const chunks = buildChunks(msgs, characterName);
 
@@ -264,7 +274,11 @@ export async function ingest(characterId: number, characterName: string, force =
 }
 
 /** 直接写一条记忆（用户手动添加 / 模型调用 memory_write） */
-export async function insertChunk(characterId: number, content: string, opts: { source?: 'manual' | 'model' } = {}) {
+export async function insertChunk(
+  characterId: number,
+  content: string,
+  opts: { source?: 'manual' | 'model' | 'game' } = {},
+) {
   const text = String(content || '').trim().slice(0, 2000);
   if (!text) throw new Error('记忆内容不能为空');
   const { vectors, model } = await embedTexts([text]);
@@ -288,7 +302,7 @@ export async function insertChunk(characterId: number, content: string, opts: { 
       vec ? vecToB64(vec) : null,
       vec ? now() : null,
       now(),
-      opts.source === 'model' ? 'model' : 'manual',
+      opts.source === 'model' ? 'model' : opts.source === 'game' ? 'game' : 'manual',
     ],
   );
   return { id, content: text, embedded: Boolean(vec) };
