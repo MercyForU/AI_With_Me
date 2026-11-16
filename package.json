@@ -1,0 +1,70 @@
+{
+  "name": "ai-companion",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "node scripts/copy-ort.mjs && next build && node scripts/export-copy.mjs",
+    "start": "node --disable-warning=ExperimentalWarning server.js",
+    "typecheck": "tsc --noEmit",
+    "copy:ort": "node scripts/copy-ort.mjs",
+    "fetch:model": "node scripts/fetch-model.mjs",
+    "setup:assets": "node scripts/copy-ort.mjs && node scripts/fetch-model.mjs",
+    "cap:sync": "npm run build && npx cap sync android",
+    "apk": "npm run cap:sync && cd android && gradlew.bat assembleDebug",
+    "exe": "electron .",
+    "dist": "npm run build && electron-builder --win --x64"
+  },
+  "dependencies": {
+    "@capacitor-community/sqlite": "^8.1.1",
+    "@capacitor/android": "^8.6.2",
+    "@capacitor/core": "^8.6.2",
+    "next": "15.5.29",
+    "onnxruntime-node": "^1.31.1",
+    "onnxruntime-web": "^1.31.1",
+    "react": "19.1.10",
+    "react-dom": "19.1.10"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.6.2",
+    "@types/node": "^22.10.2",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "autoprefixer": "^10.4.20",
+    "electron": "^45.3.2",
+    "electron-builder": "^26.18.0",
+    "postcss": "^8.4.49",
+    "tailwindcss": "3.4.19",
+    "typescript": "^5.7.2"
+  },
+  "main": "electron/main.cjs",
+  "build": {
+    "appId": "com.nuan.companion",
+    "productName": "暧",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "electron/**",
+      "server.js",
+      "server/**",
+      "site/**",
+      "!site/models/**",
+      "!site/ort/**",
+      "models/**",
+      "assets/**",
+      "package.json"
+    ],
+    "asar": false,
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "暧"
+    }
+  }
+}

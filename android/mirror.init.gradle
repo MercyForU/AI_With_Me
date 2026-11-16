@@ -1,0 +1,30 @@
+// Gradle 初始化脚本：把所有仓库前置为国内镜像。
+//
+// 为什么用 init 脚本而不是改 build.gradle：
+// android/ 下的部分文件（capacitor-cordova-android-plugins/build.gradle 等）由
+// `npx cap sync` 生成，手改会被覆盖。init 脚本对整次构建生效，不受生成影响。
+//
+// 用法：gradlew -I mirror.init.gradle assembleDebug
+
+def MIRRORS = [
+    'https://maven.aliyun.com/repository/google',
+    'https://maven.aliyun.com/repository/public',
+    'https://maven.aliyun.com/repository/gradle-plugin',
+]
+
+allprojects {
+    buildscript {
+        repositories {
+            MIRRORS.each { u -> maven { url u } }
+        }
+    }
+    repositories {
+        MIRRORS.each { u -> maven { url u } }
+    }
+}
+
+settingsEvaluated { settings ->
+    settings.pluginManagement.repositories {
+        MIRRORS.each { u -> maven { url u } }
+    }
+}

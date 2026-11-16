@@ -1,0 +1,65 @@
+# ============================================================
+# 暧 · AI 陪伴 —— 仓库忽略规则
+# 原则：能被重新生成的东西、以及含隐私的东西，都不进仓库。
+# ============================================================
+
+# ---------- 依赖 ----------
+node_modules/
+.pnp
+.pnp.js
+npm-debug.log*
+
+# ---------- Next.js 构建产物 ----------
+.next/
+out/
+site/
+next-env.d.ts
+*.tsbuildinfo
+
+# ---------- 运行时数据（含隐私，绝不提交） ----------
+# data/app.db 存聊天记录、记忆、加密后的 API Key；
+# data/.secret 是加密密钥；data/uploads/ 是头像。
+# 换电脑时这三样要一起拷，但永远不要 push。
+data/
+
+# ---------- 模型与静态二进制（用脚本还原） ----------
+# 嵌入模型 24MB：npm run fetch:model
+models/
+# onnxruntime wasm 15MB：npm run copy:ort（build 前会自动跑）
+public/ort/
+
+# ---------- 打包产物 ----------
+dist/
+build/
+*.apk
+*.aab
+*.exe
+*.blockmap
+*.dmg
+
+# ---------- Android ----------
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/capacitor-cordova-android-plugins/
+android/app/src/main/assets/public/
+android/app/src/main/assets/capacitor.config.json
+*.jks
+*.keystore
+
+# ---------- 日志与系统杂物 ----------
+*.log
+firewall-log.txt
+.DS_Store
+Thumbs.db
+desktop.ini
+*.tmp
+*.bak
+.cache/
+
+# ---------- 编辑器 ----------
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
