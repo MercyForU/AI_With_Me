@@ -45,6 +45,10 @@ const DRAW_MARKERS = [
   /(?:^|\n)\s*[\[【]\s*(?:img|image|图片|画)\s*[:：]\s*([^\]】\n]+?)\s*[\]】]?\s*(?=\n|$)/i,
 ];
 
+/** 画面感很强的词：用来判断一段话到底是「对话」还是「画图描述」 */
+const DRAW_STYLE_WORDS =
+  /(光线|光影|氛围|构图|镜头|特写|景深|背景|质感|画风|插画|写实|电影感|胶片|唯美|色调|视角|俯视|仰视|远景|近景|细节|渲染|摄影|水彩|油画|动漫|二次元|像素|柔和|眩光|逆光|侧光|全景|中景|8k|4k|超清)/i;
+
 function unescapeJsonString(raw) {
   try {
     return JSON.parse(`"${raw}"`);
@@ -53,12 +57,22 @@ function unescapeJsonString(raw) {
   }
 }
 
+/** 这段话像不像一张图的描述（而不是在跟人聊天） */
+function looksLikeDrawPrompt(text) {
+  const t = String(text || '').trim();
+  if (t.length < 18) return false;
+  if (/[?？]/.test(t)) return false;
+  // 有第一人称、语气词，基本就是在说话
+  if (/(我|你|咱|吧|啦|嘛|哦|嗯|呀|呢)/.test(t)) return DRAW_STYLE_WORDS.test(t) && t.length > 60;
+  return DRAW_STYLE_WORDS.test(t) || t.length > 40;
+}
+
 /**
  * 从模型回复里取出画图意图。
  * 不再只在 tool 模式看 tool_calls、只在 marker 模式看标记：
- * 中转把工具调用写成文本、模型写错括号、写完标记又补一句话，这些都得兜住。
+ * 中转把工具调用写成文本、模型写错括号、只画不说（整条就是一个方括号），这些都得兜住。
  */
-function extractDrawIntent(toolCalls, text) {
+function extractDrawIntent(toolCalls, text, opts = {}) {
   // 1) 原生 tool_calls
   if (Array.isArray(toolCalls)) {
     const call = toolCalls.find((t) => t && t.name === 'generate_image');
@@ -95,7 +109,33 @@ function extractDrawIntent(toolCalls, text) {
   const only = t.trim().match(/^\{\s*"prompt"\s*:\s*"((?:[^"\\]|\\.)*)"\s*\}\s*$/i);
   if (only) return unescapeJsonString(only[1]).trim();
 
+  // 5) 「只画不说」：整条消息就是一个方括号，没写 img: 前缀
+  //    只在对方式要图、或描述里明显有画面感时才认，避免把 [笑] [叹了口气] 这类动作当成画图
+  const bare = t.trim().match(/^[\[【]([^\]】\n]{8,})[\]】]$/);
+  if (bare) {
+    const body = bare[1].trim();
+    if (opts.wantsImage || DRAW_STYLE_WORDS.test(body)) return body;
+  }
+
   return '';
+}
+
+/** 模型的整条回复就是那张图的描述（没括号也没标记） */
+function isWholeReplyPrompt(text) {
+  return looksLikeDrawPrompt(text);
+}
+
+/**
+ * 如果正文整条就是被我们拿去画图的那段（方括号或裸描述），正文就该留空，
+ * 别再当聊天发出去。
+ */
+function stripConsumedPrompt(text, prompt) {
+  const t = String(text || '').trim();
+  if (!t || !prompt) return text;
+  if (t === prompt) return '';
+  const m = t.match(/^[\[【]([^\]】\n]+)[\]】]$/);
+  if (m && m[1].trim() === prompt) return '';
+  return text;
 }
 
 /** 把残留的标记 / 被当成文本的工具调用从正文里摘干净 */
@@ -1137,7 +1177,7 @@ async function handle(req, res, url) {
 
       // 对方明说要图时，把要求写在这一轮的最后一条上（只影响本次请求，不入库）：
       // 光靠 system prompt 有时还不够，模型会答「我不会画」
-      const wantsImage = /(画[一张个幅]|来张|发张|照片|自拍|配图|生成.{0,4}图|涂鸦)/.test(input);
+      const wantsImage = /(画[一张个幅]|来张|来一张|发张|发一张|照片|自拍|配图|涂鸦|帮我画|给我画|画一下|再画一?[张个]|生成.{0,4}图)/.test(input);
       if (wantsImage && drawMode && conversation.length) {
         const last = conversation[conversation.length - 1];
         const how = drawMode === 'tool' ? '调用 generate_image' : '在最后一行写 [[img: 画面描述]]';
@@ -1196,9 +1236,17 @@ async function handle(req, res, url) {
       }
 
       const rawText = preText + (result.text || '');
+      const turnText = String(result.text || '').trim();
       // 残留的标记、被当成文本吐出来的工具调用，一律从正文里摘掉
       let finalText = cleanDrawResidue(rawText);
-      let drawPrompt = extractDrawIntent(result.toolCalls, rawText);
+      let drawPrompt = extractDrawIntent(result.toolCalls, rawText, { wantsImage });
+
+      // 「只画不说」：整条回复就是那张图的描述，直接拿去画，别再当聊天发出去
+      if (!drawPrompt && wantsImage && isWholeReplyPrompt(turnText)) {
+        drawPrompt = turnText;
+      }
+      // 这段话被拿去画图了，正文就不该再重复一遍
+      if (drawPrompt) finalText = stripConsumedPrompt(finalText, drawPrompt);
 
       // 对方明明要图，模型却回了一大段文字（常是把提示词当成了回复）：
       // 强制再要一次工具调用，免得把提示词原样发进聊天
@@ -1217,7 +1265,7 @@ async function handle(req, res, url) {
             signal: controller.signal,
             onDelta: () => {},
           });
-          const p = extractDrawIntent(forced.toolCalls, forced.text);
+          const p = extractDrawIntent(forced.toolCalls, forced.text, { wantsImage: true });
           if (p) {
             drawPrompt = p;
             // 原来那段大概率就是画面描述，留着会像「把提示词发出来了」
@@ -1228,7 +1276,10 @@ async function handle(req, res, url) {
         }
       }
 
-      if (!finalText && !drawPrompt) throw new Error('模型没有返回内容');
+      if (!finalText && !drawPrompt) {
+        console.warn('[image] 没认出画图意图，模型原始输出：', rawText.slice(0, 300));
+        throw new Error('模型没有返回内容');
+      }
 
       // 出图改成后台任务：先占位，生成好了再把图填进去，对话不用等
       let imageMessage = null;

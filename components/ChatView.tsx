@@ -575,6 +575,11 @@ export default function ChatView() {
                                   loading="lazy"
                                 />
                               </button>
+                              {shown ? (
+                                <span className="block px-3 py-2 text-[11px] leading-snug text-fg-dimmer">
+                                  {shown}
+                                </span>
+                              ) : null}
                             </div>
                           </div>
                         );

@@ -77,6 +77,10 @@ const DRAW_MARKERS = [
   /(?:^|\n)\s*[\[【]\s*(?:img|image|图片|画)\s*[:：]\s*([^\]】\n]+?)\s*[\]】]?\s*(?=\n|$)/i,
 ];
 
+/** 画面感很强的词：判断一段话是「对话」还是「画图描述」 */
+const DRAW_STYLE_WORDS =
+  /(光线|光影|氛围|构图|镜头|特写|景深|背景|质感|画风|插画|写实|电影感|胶片|唯美|色调|视角|俯视|仰视|远景|近景|细节|渲染|摄影|水彩|油画|动漫|二次元|像素|柔和|眩光|逆光|侧光|全景|中景|8k|4k|超清)/i;
+
 function unescapeJsonString(raw: string) {
   try {
     return JSON.parse(`"${raw}"`);
@@ -85,11 +89,24 @@ function unescapeJsonString(raw: string) {
   }
 }
 
+/** 这段话像不像一张图的描述（而不是在跟人聊天） */
+function looksLikeDrawPrompt(text: string) {
+  const t = String(text || '').trim();
+  if (t.length < 18) return false;
+  if (/[?？]/.test(t)) return false;
+  if (/(我|你|咱|吧|啦|嘛|哦|嗯|呀|呢)/.test(t)) return DRAW_STYLE_WORDS.test(t) && t.length > 60;
+  return DRAW_STYLE_WORDS.test(t) || t.length > 40;
+}
+
 /**
- * 取画图意图：原生 tool_calls 优先，其次各种标记写法，
- * 再其次是被当成文本吐出来的工具调用 JSON。
+ * 取画图意图：原生 tool_calls → 各种标记 → 被当成文本的 JSON →
+ * 「只画不说」的整条方括号。
  */
-function extractDrawIntent(toolCalls: Array<{ name: string; arguments: string }>, text: string) {
+function extractDrawIntent(
+  toolCalls: Array<{ name: string; arguments: string }>,
+  text: string,
+  opts: { wantsImage?: boolean } = {},
+) {
   if (Array.isArray(toolCalls)) {
     const call = toolCalls.find((t) => t && t.name === 'generate_image');
     if (call) {
@@ -121,7 +138,29 @@ function extractDrawIntent(toolCalls: Array<{ name: string; arguments: string }>
   const only = t.trim().match(/^\{\s*"prompt"\s*:\s*"((?:[^"\\]|\\.)*)"\s*\}\s*$/i);
   if (only) return unescapeJsonString(only[1]).trim();
 
+  // 「只画不说」：整条就是一个方括号，没有 img: 前缀
+  const bare = t.trim().match(/^[\[【]([^\]】\n]{8,})[\]】]$/);
+  if (bare) {
+    const body = bare[1].trim();
+    if (opts.wantsImage || DRAW_STYLE_WORDS.test(body)) return body;
+  }
+
   return '';
+}
+
+/** 整条回复就是那张图的描述（没括号也没标记） */
+function isWholeReplyPrompt(text: string) {
+  return looksLikeDrawPrompt(text);
+}
+
+/** 正文整条就是被拿去画图的那段时，正文留空 */
+function stripConsumedPrompt(text: string, prompt: string) {
+  const t = String(text || '').trim();
+  if (!t || !prompt) return text;
+  if (t === prompt) return '';
+  const m = t.match(/^[\[【]([^\]】\n]+)[\]】]$/);
+  if (m && m[1].trim() === prompt) return '';
+  return text;
 }
 
 /** 残留标记、被当文本的工具调用，一律从正文里摘掉 */
@@ -931,7 +970,7 @@ export async function runChat(
     if (persistUser) conversation.push({ role: 'user', content: input.trim() });
 
     // 对方明说要图时，把要求追加到这一轮最后一条上（只影响本次请求）
-    const wantsImage = /(画[一张个幅]|来张|发张|照片|自拍|配图|生成.{0,4}图|涂鸦)/.test(input);
+    const wantsImage = /(画[一张个幅]|来张|来一张|发张|发一张|照片|自拍|配图|涂鸦|帮我画|给我画|画一下|再画一?[张个]|生成.{0,4}图)/.test(input);
     if (wantsImage && drawMode && conversation.length) {
       const last = conversation[conversation.length - 1];
       const how = drawMode === 'tool' ? '调用 generate_image' : '在最后一行写 [[img: 画面描述]]';
@@ -984,8 +1023,15 @@ export async function runChat(
     }
 
     const rawText = preText + (result.text || '');
+    const turnText = String(result.text || '').trim();
     let finalText = cleanDrawResidue(rawText);
-    let drawPrompt = extractDrawIntent(result.toolCalls, rawText);
+    let drawPrompt = extractDrawIntent(result.toolCalls, rawText, { wantsImage });
+
+    // 「只画不说」：整条回复就是那张图的描述，直接拿去画
+    if (!drawPrompt && wantsImage && isWholeReplyPrompt(turnText)) {
+      drawPrompt = turnText;
+    }
+    if (drawPrompt) finalText = stripConsumedPrompt(finalText, drawPrompt);
 
     // 对方明明要图，模型却回了一大段文字：强制再要一次工具调用
     if (!drawPrompt && img && wantsImage && drawMode === 'tool' && !/[?？]/.test(result.text || '')) {
@@ -1001,7 +1047,7 @@ export async function runChat(
           tools,
           toolChoice: { type: 'function', function: { name: 'generate_image' } },
         });
-        const p = extractDrawIntent(forced.toolCalls, forced.text);
+        const p = extractDrawIntent(forced.toolCalls, forced.text, { wantsImage: true });
         if (p) {
           drawPrompt = p;
           if ((result.text || '').length > 40) finalText = '好，我画一张给你看。';
