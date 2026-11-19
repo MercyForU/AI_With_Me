@@ -38,6 +38,7 @@ import { buildContext, buildSystemPrompt, POST_PROMPT, POST_SYSTEM } from './pro
 import { chatOnce, chatProbe, chatStream, listModels, type ChatMessage } from './llm';
 import { compressDataUrl, generateImage } from './image';
 import * as games from './games';
+import * as imageQueue from './imageQueue';
 
 export type ApiResult = { status: number; data: unknown };
 
@@ -162,6 +163,7 @@ export async function seedIfEmpty(): Promise<void> {
     );
   }
   await setSetting('seeded', '1');
+  await imageQueue.failStalePlaceholders();
 }
 
 let warmStarted = false;
@@ -581,6 +583,12 @@ export async function handle(
 
   // ---- 角色 ----
   if (path === '/api/characters' && method === 'GET') return ok({ characters: await listCharacters() });
+  // 批量查消息状态：前端轮询占位图用
+  if (path === '/api/messages/status' && method === 'POST') {
+    const ids = Array.isArray(body.ids) ? body.ids.map(Number).filter((n) => Number.isFinite(n)).slice(0, 20) : [];
+    return ok({ messages: await imageQueue.statusOf(ids) });
+  }
+
   if (path === '/api/characters' && method === 'POST') {
     try {
       return ok({ character: await createCharacter(body) });
@@ -873,6 +881,17 @@ export async function runChat(
     // 消息已经落库时就不再补一条，history 末尾就是刚发的那几句
     if (persistUser) conversation.push({ role: 'user', content: input.trim() });
 
+    // 对方明说要图时，把要求追加到这一轮最后一条上（只影响本次请求）
+    const wantsImage = /(画[一张个幅]|来张|发张|照片|自拍|配图|生成.{0,4}图|涂鸦)/.test(input);
+    if (wantsImage && drawMode && conversation.length) {
+      const last = conversation[conversation.length - 1];
+      const how = drawMode === 'tool' ? '调用 generate_image' : '在最后一行写 [[img: 画面描述]]';
+      conversation[conversation.length - 1] = {
+        ...last,
+        content: `${last.content}\n\n（对方在要图：直接${how}把图画出来，不要说不会、不要只用文字描述）`,
+      };
+    }
+
     // 工具循环：模型可以先查记忆/记东西，再开口
     let preText = '';
     let result = await chatStream({
@@ -921,24 +940,18 @@ export async function runChat(
 
     if (!finalText && !drawPrompt) throw new Error('模型没有返回内容');
 
-    let imageResult: { url: string } | null = null;
-    if (drawPrompt) {
-      try {
-        imageResult = await generateImage(img!.provider, img!.model, drawPrompt);
-      } catch {
-        const fallback = '（本来想画给你看，画笔却出问题了…）';
-        finalText = finalText && finalText.length > 40 ? `${finalText}\n${fallback}` : fallback;
-      }
-    }
+    // 出图改成后台任务：先占位，画好了再填进同一条消息
+    const imageMessage = drawPrompt
+      ? await imageQueue.enqueue({
+          characterId,
+          prompt: drawPrompt,
+          provider: img!.provider,
+          model: img!.model,
+        })
+      : null;
 
     const assistantMessage = finalText
       ? await insertMessage(characterId, 'assistant', finalText, 'text')
-      : null;
-
-    const imageMessage = imageResult
-      ? await insertMessage(characterId, 'assistant', drawPrompt, 'image', [
-          { type: 'image', url: imageResult.url },
-        ])
       : null;
 
     const affinity = c.affinity + 1;

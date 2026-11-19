@@ -24,8 +24,13 @@ export type MessageKind = 'text' | 'game' | 'system' | 'error' | 'image';
 
 export type Attachment = {
   type: 'image';
-  url: string;
+  /** 生图任务中：pending 占位 → done 出图 / failed 失败 */
+  status?: 'pending' | 'done' | 'failed';
+  url?: string;
   bytes?: number;
+  /** 画的是什么（占位时先告诉用户） */
+  prompt?: string;
+  error?: string;
 };
 
 export type Message = {

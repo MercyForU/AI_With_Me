@@ -12,6 +12,9 @@ const memory = require('./memory');
 const memorySearch = require('./memory/search');
 const memoryTools = require('./memory/tools');
 const games = require('./games');
+const imageQueue = require('./imageQueue');
+// 启动时把上次没画完的占位收个尾
+imageQueue.failStalePlaceholders();
 const embedding = require('./embedding');
 const rebuild = require('./memory/rebuild');
 const { buildSystemPrompt, buildContext, POST_SYSTEM, POST_PROMPT } = require('./prompt');
@@ -23,7 +26,8 @@ const IMAGE_TOOL = {
   type: 'function',
   function: {
     name: 'generate_image',
-    description: '画一张图发给对方。当对方要你画、或你想分享一个具体画面时使用。',
+    description:
+      '画一张图发给对方。对方要图时必须调用，不要用文字推脱；聊到具体画面时也可以主动画。',
     parameters: {
       type: 'object',
       properties: {
@@ -836,6 +840,18 @@ async function handle(req, res, url) {
     return json(res, 200, { character: getCharacter(id) });
   }
 
+  // 批量查消息状态：前端轮询占位图用
+  if (path === '/api/messages/status' && method === 'POST') {
+    const body = await readBody(req);
+    const ids = Array.isArray(body.ids) ? body.ids.map(Number).filter((n) => Number.isFinite(n)).slice(0, 20) : [];
+    if (!ids.length) return json(res, 200, { messages: [] });
+    const rows = db
+      .prepare(`SELECT * FROM messages WHERE id IN (${ids.map(() => '?').join(',')})`)
+      .all(...ids)
+      .map(mapMessage);
+    return json(res, 200, { messages: rows });
+  }
+
   // 单独写一条消息（防抖时先把每条都落库上屏，再统一生成回复）
   match = m(/^\/api\/characters\/(\d+)\/messages$/);
   if (match && method === 'POST') {
@@ -1065,6 +1081,18 @@ async function handle(req, res, url) {
       // 消息已经落库时不再补一条，history 末尾就是刚发的那几句
       if (persistUser) conversation.push({ role: 'user', content: input });
 
+      // 对方明说要图时，把要求写在这一轮的最后一条上（只影响本次请求，不入库）：
+      // 光靠 system prompt 有时还不够，模型会答「我不会画」
+      const wantsImage = /(画[一张个幅]|来张|发张|照片|自拍|配图|生成.{0,4}图|涂鸦)/.test(input);
+      if (wantsImage && drawMode && conversation.length) {
+        const last = conversation[conversation.length - 1];
+        const how = drawMode === 'tool' ? '调用 generate_image' : '在最后一行写 [[img: 画面描述]]';
+        conversation[conversation.length - 1] = {
+          ...last,
+          content: `${last.content}\n\n（对方在要图：直接${how}把图画出来，不要说不会、不要只用文字描述）`,
+        };
+      }
+
       // 工具循环：模型可能先查记忆/记东西，再开口说话。
       // 最多两轮，避免模型在工具里绕不出来。
       let preText = '';
@@ -1121,34 +1149,19 @@ async function handle(req, res, url) {
 
       if (!finalText && !drawPrompt) throw new Error('模型没有返回内容');
 
-      // 先出图再落文本：生图失败时把「画好了」这类话改写成诚实的降级句，
-      // 而不是留下一条说谎的消息再补一条道歉
-      let imageResult = null;
+      // 出图改成后台任务：先占位，生成好了再把图填进去，对话不用等
+      let imageMessage = null;
       if (drawPrompt) {
-        try {
-          imageResult = await image.generate({
-            provider: img.provider,
-            model: img.model,
-            prompt: drawPrompt,
-            signal: controller.signal,
-          });
-        } catch (e) {
-          console.warn('[image] 生图失败：', e.message);
-          const fallback = '（本来想画给你看，画笔却出问题了…）';
-          // 短回复多半就是「画好啦」这类话，留着会和降级句自相矛盾，直接换掉
-          finalText = finalText && finalText.length > 40 ? `${finalText}\n${fallback}` : fallback;
-        }
+        imageMessage = imageQueue.enqueue({
+          characterId: id,
+          prompt: drawPrompt,
+          provider: img.provider,
+          model: img.model,
+        });
       }
 
       let assistantMessage = null;
       if (finalText) assistantMessage = insertMessage(id, 'assistant', finalText, 'text');
-
-      let imageMessage = null;
-      if (imageResult) {
-        imageMessage = insertMessage(id, 'assistant', drawPrompt, 'image', [
-          { type: 'image', url: imageResult.url, bytes: imageResult.bytes },
-        ]);
-      }
 
       const affinity = c.affinity + 1;
       const level = Math.min(5, 1 + Math.floor(affinity / 8));

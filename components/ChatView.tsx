@@ -24,6 +24,7 @@ import {
   IconStop,
 } from './icons';
 import GameHub from './GameHub';
+import ImageViewer from './ImageViewer';
 
 function timeLabel(iso: string) {
   const d = new Date(iso);
@@ -80,6 +81,7 @@ export default function ChatView() {
   const [showInfo, setShowInfo] = useState(false);
   const [gameOpen, setGameOpen] = useState(false);
   const [clearOpen, setClearOpen] = useState(false);
+  const [viewerSrc, setViewerSrc] = useState<string | null>(null);
   const [clearing, setClearing] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [archived, setArchived] = useState(0);
@@ -505,28 +507,82 @@ export default function ChatView() {
                         </span>
                       </div>
                     ) : isImage ? (
-                      <div className="flex animate-fade-up items-end gap-2">
-                        <Avatar emoji={active.emoji} accent={active.accent} src={active.avatar_url} size={28} />
-                        <a
-                          href={assetUrl(m.attachments?.[0]?.url)}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="block max-w-[78%] overflow-hidden rounded-2xl rounded-bl-md border border-line bg-raise/80"
-                        >
-                          {/* 生成图存文件，不塞 base64，避免把库撑大 */}
-                          <img
-                            src={assetUrl(m.attachments?.[0]?.url)}
-                            alt={shown || '生成的图片'}
-                            className="block max-h-[360px] w-full object-contain"
-                            loading="lazy"
-                          />
-                          {shown ? (
-                            <span className="block px-3 py-2 text-[11px] leading-snug text-fg-dimmer">
-                              {shown}
-                            </span>
-                          ) : null}
-                        </a>
-                      </div>
+                      (() => {
+                        const att = m.attachments?.[0];
+                        const status = att?.status || 'done';
+                        // 还在画：先占个位，画好之后会被轮询替换成真图
+                        if (status === 'pending') {
+                          return (
+                            <div className="flex items-end gap-2">
+                              <Avatar
+                                emoji={active.emoji}
+                                accent={active.accent}
+                                src={active.avatar_url}
+                                size={28}
+                              />
+                              <div className="w-[200px] overflow-hidden rounded-2xl rounded-bl-md border border-dashed border-line bg-raise/40">
+                                <div className="flex aspect-square flex-col items-center justify-center gap-2 text-fg-dimmer">
+                                  <span className="h-6 w-6 animate-spin rounded-full border-2 border-line border-t-brand" />
+                                  <span className="text-[11px]">在画了…</span>
+                                </div>
+                                {att?.prompt ? (
+                                  <span className="line-clamp-2 block border-t border-line px-2.5 py-1.5 text-[10.5px] leading-snug text-fg-dimmer">
+                                    {att.prompt}
+                                  </span>
+                                ) : null}
+                              </div>
+                            </div>
+                          );
+                        }
+                        if (status === 'failed') {
+                          return (
+                            <div className="flex items-end gap-2">
+                              <Avatar
+                                emoji={active.emoji}
+                                accent={active.accent}
+                                src={active.avatar_url}
+                                size={28}
+                              />
+                              <div className="max-w-[78%] rounded-2xl rounded-bl-md border border-danger/30 bg-danger/[0.06] px-3 py-2 text-[12px] leading-relaxed text-danger">
+                                <p>这张没画出来</p>
+                                <p className="mt-0.5 text-[10.5px] opacity-80">
+                                  {att?.error || '生成失败了'}
+                                </p>
+                              </div>
+                            </div>
+                          );
+                        }
+                        return (
+                          <div className="flex animate-fade-up items-end gap-2">
+                            <Avatar
+                              emoji={active.emoji}
+                              accent={active.accent}
+                              src={active.avatar_url}
+                              size={28}
+                            />
+                            <div className="max-w-[78%] overflow-hidden rounded-2xl rounded-bl-md border border-line bg-raise/80">
+                              {/* 点开进入看图模式 */}
+                              <button
+                                onClick={() => setViewerSrc(att?.url || '')}
+                                className="block w-full cursor-zoom-in transition active:opacity-90"
+                                title="点开看大图"
+                              >
+                                <img
+                                  src={assetUrl(att?.url || '')}
+                                  alt={shown || '生成的图片'}
+                                  className="block max-h-[360px] w-full object-contain"
+                                  loading="lazy"
+                                />
+                              </button>
+                              {shown ? (
+                                <span className="block px-3 py-2 text-[11px] leading-snug text-fg-dimmer">
+                                  {shown}
+                                </span>
+                              ) : null}
+                            </div>
+                          </div>
+                        );
+                      })()
                     ) : (
                       <div
                         className={`group flex animate-fade-up items-end gap-2 ${
@@ -761,6 +817,8 @@ export default function ChatView() {
       </Modal>
 
       <GameHub open={gameOpen} character={active} onClose={() => setGameOpen(false)} />
+
+      <ImageViewer src={viewerSrc} onClose={() => setViewerSrc(null)} />
     </div>
   );
 }

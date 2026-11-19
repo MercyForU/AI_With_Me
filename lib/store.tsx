@@ -1132,6 +1132,56 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     [notify],
   );
 
+  // 正在生成的图：占位消息里 status=pending，轮询到 done 就替换真图并提示一句
+  const pendingImageIds = useMemo(() => {
+    const list = messages[activeId ?? -1] ?? [];
+    return list
+      .filter((m) => m.kind === 'image' && m.attachments?.[0]?.status === 'pending')
+      .map((m) => m.id);
+  }, [messages, activeId]);
+  const pendingKey = pendingImageIds.join(',');
+
+  useEffect(() => {
+    if (!pendingKey) return;
+    const ids = pendingKey.split(',').map(Number).filter((n) => Number.isFinite(n));
+    if (!ids.length) return;
+    let alive = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const tick = async () => {
+      if (!alive) return;
+      try {
+        const r = await api<{ messages: Message[] }>('/api/messages/status', {
+          method: 'POST',
+          body: { ids },
+        });
+        if (!alive) return;
+        const updated = r.messages || [];
+        if (updated.length) {
+          const byId = new Map(updated.map((m) => [m.id, m]));
+          setMessages((prev) => {
+            const next: typeof prev = {};
+            for (const [cid, list] of Object.entries(prev)) {
+              next[Number(cid)] = list.map((m) => byId.get(m.id) ?? m);
+            }
+            return next;
+          });
+          const done = updated.filter((m) => m.attachments?.[0]?.status === 'done').length;
+          if (done) notify(done > 1 ? `${done} 张都画好了` : '画好了');
+        }
+      } catch {
+        /* 网络抖动就等下一轮 */
+      }
+      if (alive) timer = setTimeout(tick, 1500);
+    };
+
+    timer = setTimeout(tick, 900);
+    return () => {
+      alive = false;
+      if (timer) clearTimeout(timer);
+    };
+  }, [pendingKey, notify]);
+
   const value: AppContextValue = {
     ready,
     needsSetup,
