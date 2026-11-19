@@ -50,7 +50,7 @@ function Root() {
 }
 
 export function Shell() {
-  const { user, characters, openSettings, rebuild } = useApp();
+  const { user, characters, openSettings, rebuild, chatDetailOpen } = useApp();
   const [tab, setTab] = useState<Tab>('chat');
 
   const rebuilding = rebuild?.status === 'running';
@@ -151,8 +151,12 @@ export function Shell() {
         {tab === 'circle' ? <CircleView /> : null}
       </main>
 
-      {/* 移动端底部导航 */}
-      <nav className="glass flex min-h-[64px] shrink-0 items-stretch border-t border-line pb-[env(safe-area-inset-bottom)] lg:hidden">
+      {/* 移动端底部导航：进到具体对话里就收起，把整屏让给聊天 */}
+      <nav
+        className={`glass flex min-h-[64px] shrink-0 items-stretch border-t border-line pb-[env(safe-area-inset-bottom)] lg:hidden ${
+          tab === 'chat' && chatDetailOpen ? 'hidden' : ''
+        }`}
+      >
         {TABS.map(({ key, label, icon: Icon }) => {
           const activeTab = tab === key;
           return (

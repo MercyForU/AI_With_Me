@@ -95,6 +95,10 @@ export type AppContextValue = {
   loadingChar: boolean;
   toasts: Toast[];
 
+  /** 移动端是否正停在某个角色的对话里（此时底部 tab 要藏起来） */
+  chatDetailOpen: boolean;
+  setChatDetailOpen: (v: boolean) => void;
+
   settingsOpen: boolean;
   openSettings: () => void;
   closeSettings: () => void;
@@ -195,6 +199,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [loadingChar, setLoadingChar] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [chatDetailOpen, setChatDetailOpen] = useState(false);
   const [memoryPanel, setMemoryPanel] = useState<{ open: boolean; characterId: number | null }>({
     open: false,
     characterId: null,
@@ -1161,6 +1166,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     streamingText,
     loadingChar,
     toasts,
+    chatDetailOpen,
+    setChatDetailOpen,
     settingsOpen,
     openSettings,
     closeSettings,

@@ -182,6 +182,13 @@ export const IconEdit = (p: IconProps) => (
   </Svg>
 );
 
+/** 向下（回到最新） */
+export const IconChevronDown = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M6 9l6 6 6-6" />
+  </Svg>
+);
+
 /** 重新开始 / 清空上下文 */
 export const IconRefresh = (p: IconProps) => (
   <Svg {...p}>

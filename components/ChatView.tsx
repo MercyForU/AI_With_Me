@@ -10,6 +10,7 @@ import {
   IconBack,
   IconChat,
   IconCheck,
+  IconChevronDown,
   IconDownload,
   IconGame,
   IconInfo,
@@ -71,6 +72,7 @@ export default function ChatView() {
     memoryStats,
     resetContext,
     notify,
+    setChatDetailOpen,
   } = useApp();
 
   const [draft, setDraft] = useState('');
@@ -88,15 +90,78 @@ export default function ChatView() {
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const activeModel = modelOptionFor(activeId);
+  const showChatOnMobile = Boolean(mobileOpen && active);
   const list = messages[activeId ?? -1] ?? [];
   const memList = memories[activeId ?? -1] ?? [];
   const gameList = games[activeId ?? -1] ?? [];
 
+  const [atBottom, setAtBottom] = useState(true);
+  const atBottomRef = useRef(true);
+
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior });
+  }, []);
+
+  const jumpToBottom = useCallback(() => {
+    atBottomRef.current = true;
+    setAtBottom(true);
+    scrollToBottom('smooth');
+  }, [scrollToBottom]);
+
+  // 自动跟随：只在本来就贴底时滚，往上翻历史时别打断
   useEffect(() => {
+    if (!atBottomRef.current) return;
     const el = scrollerRef.current;
     if (!el) return;
     el.scrollTo({ top: el.scrollHeight, behavior: streaming ? 'auto' : 'smooth' });
   }, [list.length, streamingText, streaming, activeId]);
+
+  // 记录当前是不是在底部（留 80px 容差）
+  useEffect(() => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
+      const near = gap < 80;
+      atBottomRef.current = near;
+      setAtBottom(near);
+    };
+    el.addEventListener('scroll', onScroll, { passive: true });
+    onScroll();
+    return () => el.removeEventListener('scroll', onScroll);
+  }, [activeId, showChatOnMobile]);
+
+  // 键盘弹出会把可视区压矮，贴底的话要继续贴住
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const onResize = () => {
+      if (!atBottomRef.current) return;
+      const el = scrollerRef.current;
+      if (el) el.scrollTop = el.scrollHeight;
+    };
+    vv.addEventListener('resize', onResize);
+    return () => vv.removeEventListener('resize', onResize);
+  }, []);
+
+  // 进对话、移动端切到详情时，先落到最新一条
+  useEffect(() => {
+    if (!showChatOnMobile && activeId === null) return;
+    const t = window.setTimeout(() => {
+      atBottomRef.current = true;
+      setAtBottom(true);
+      scrollToBottom('auto');
+    }, 60);
+    return () => window.clearTimeout(t);
+  }, [activeId, showChatOnMobile, scrollToBottom]);
+
+  // 让外层知道「移动端正停在对话里」，好把底部 tab 收起来
+  useEffect(() => {
+    setChatDetailOpen(Boolean(mobileOpen && active));
+  }, [mobileOpen, active, setChatDetailOpen]);
+  useEffect(() => () => setChatDetailOpen(false), [setChatDetailOpen]);
 
   useEffect(() => {
     const el = inputRef.current;
@@ -205,8 +270,6 @@ export default function ChatView() {
       </div>
     );
   }
-
-  const showChatOnMobile = mobileOpen && active;
 
   return (
     <div className="flex h-full min-h-0">
@@ -400,6 +463,7 @@ export default function ChatView() {
             ) : null}
           </header>
 
+          <div className="relative flex min-h-0 flex-1 flex-col">
           <div ref={scrollerRef} className="flex-1 overflow-y-auto px-4 py-5 lg:px-6">
             <div className="mx-auto flex w-full max-w-[860px] flex-col gap-1 2xl:max-w-[960px]">
               {loadingChar && list.length === 0 ? (
@@ -525,6 +589,19 @@ export default function ChatView() {
             </div>
           </div>
 
+            {!atBottom && list.length > 0 ? (
+              <button
+                onClick={jumpToBottom}
+                className="absolute bottom-3 right-4 z-10 flex items-center gap-1 rounded-full border border-line bg-card/95 px-3 py-1.5 text-[11.5px] text-fg-dim shadow-panel backdrop-blur transition hover:text-fg"
+                title="回到最新"
+                aria-label="回到最新消息"
+              >
+                <IconChevronDown size={13} />
+                到底部
+              </button>
+            ) : null}
+          </div>
+
           {/* 输入区 */}
           <div className="shrink-0 border-t border-line bg-surface/60 px-3 py-3 lg:px-6 lg:py-4">
             {!activeModel ? (
@@ -546,6 +623,14 @@ export default function ChatView() {
                   ref={inputRef}
                   rows={1}
                   value={draft}
+                  onFocus={() => {
+                    // 等键盘动画结束再滚，否则滚的是旧的可视高度
+                    window.setTimeout(() => {
+                      atBottomRef.current = true;
+                      setAtBottom(true);
+                      scrollToBottom('smooth');
+                    }, 320);
+                  }}
                   onChange={(e) => setDraft(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && !e.shiftKey) {
