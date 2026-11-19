@@ -70,20 +70,69 @@ const IMAGE_TOOL = {
   },
 };
 
-function extractDrawIntent(toolCalls: Array<{ name: string; arguments: string }>, text: string, mode: string | null) {
-  if (mode === 'tool' && toolCalls.length) {
-    const call = toolCalls.find((t) => t.name === 'generate_image');
+/** 各种可能被模型写出来的「我要画这张图」标记 */
+const DRAW_MARKERS = [
+  /\[\[\s*(?:img|image|picture|图片|画|图)\s*[:：]\s*([^\]\n]+?)\s*\]\]/i,
+  /【\s*(?:img|image|图片|画|图)\s*[:：]\s*([^】]+?)\s*】/i,
+  /(?:^|\n)\s*[\[【]\s*(?:img|image|图片|画)\s*[:：]\s*([^\]】\n]+?)\s*[\]】]?\s*(?=\n|$)/i,
+];
+
+function unescapeJsonString(raw: string) {
+  try {
+    return JSON.parse(`"${raw}"`);
+  } catch {
+    return raw.replace(/\\n/g, '\n').replace(/\\"/g, '"');
+  }
+}
+
+/**
+ * 取画图意图：原生 tool_calls 优先，其次各种标记写法，
+ * 再其次是被当成文本吐出来的工具调用 JSON。
+ */
+function extractDrawIntent(toolCalls: Array<{ name: string; arguments: string }>, text: string) {
+  if (Array.isArray(toolCalls)) {
+    const call = toolCalls.find((t) => t && t.name === 'generate_image');
     if (call) {
       try {
         const args = JSON.parse(call.arguments || '{}');
         if (args.prompt && String(args.prompt).trim()) return String(args.prompt).trim();
       } catch {
-        /* 参数不合法当没画 */
+        /* 参数不合法往下找 */
       }
     }
   }
-  const m = text.match(/\[\[img:\s*([^\]]+)\]\]/i);
-  return m ? m[1].trim() : '';
+
+  const t = String(text || '');
+  for (const re of DRAW_MARKERS) {
+    const m = t.match(re);
+    if (m && m[1] && m[1].trim()) return m[1].trim();
+  }
+
+  // prompt 可能被转义成 \"prompt\"，先拍平再找
+  const flat = t.replace(/\\"/g, '"');
+  if (/generate_image/.test(flat)) {
+    const m = flat.match(/"prompt"\s*:\s*"((?:[^"\\]|\\.)*)"/i);
+    if (m) {
+      const p = unescapeJsonString(m[1]).trim();
+      if (p) return p;
+    }
+  }
+
+  const only = t.trim().match(/^\{\s*"prompt"\s*:\s*"((?:[^"\\]|\\.)*)"\s*\}\s*$/i);
+  if (only) return unescapeJsonString(only[1]).trim();
+
+  return '';
+}
+
+/** 残留标记、被当文本的工具调用，一律从正文里摘掉 */
+function cleanDrawResidue(text: string) {
+  return String(text || '')
+    .replace(/\[\[\s*(?:img|image|picture|图片|画|图)\s*[:：][\s\S]*?\]\]/gi, '')
+    .replace(/【\s*(?:img|image|图片|画|图)\s*[:：][^】]*】/gi, '')
+    .replace(/\{\s*"prompt"\s*:[\s\S]*?\}\s*$/i, '')
+    .replace(/\{\s*"name"\s*:\s*"generate_image"[\s\S]*$/i, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 async function providerConfig(id: number) {
@@ -934,9 +983,33 @@ export async function runChat(
       });
     }
 
-    const drawPrompt = extractDrawIntent(result.toolCalls, result.text, drawMode);
     const rawText = preText + (result.text || '');
-    let finalText = drawMode === 'marker' ? rawText.replace(/\[\[img:[^\]]*\]\]/gi, '').trim() : rawText.trim();
+    let finalText = cleanDrawResidue(rawText);
+    let drawPrompt = extractDrawIntent(result.toolCalls, rawText);
+
+    // 对方明明要图，模型却回了一大段文字：强制再要一次工具调用
+    if (!drawPrompt && img && wantsImage && drawMode === 'tool' && !/[?？]/.test(result.text || '')) {
+      try {
+        const forced = await chatStream({
+          provider: resolved.config,
+          model: resolved.model,
+          messages: [
+            ...conversation,
+            { role: 'assistant', content: (result.text || '').slice(0, 800) || '（我这就画）' },
+            { role: 'user', content: '（直接用 generate_image 把上面这段画出来，不要再解释）' },
+          ],
+          tools,
+          toolChoice: { type: 'function', function: { name: 'generate_image' } },
+        });
+        const p = extractDrawIntent(forced.toolCalls, forced.text);
+        if (p) {
+          drawPrompt = p;
+          if ((result.text || '').length > 40) finalText = '好，我画一张给你看。';
+        }
+      } catch {
+        /* 重试失败就按普通回复走 */
+      }
+    }
 
     if (!finalText && !drawPrompt) throw new Error('模型没有返回内容');
 

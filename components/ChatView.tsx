@@ -42,7 +42,10 @@ function shouldShowTime(prev: Message | undefined, cur: Message) {
 
 /** 画图标记只给服务端看，任何展示前都要摘掉 */
 function stripDrawMarker(text: string): string {
-  return text.replace(/\[\[img:[^\]]*\]\]/gi, '').trim();
+  return String(text || '')
+    .replace(/\[\[\s*(?:img|image|picture|图片|画|图)\s*[:：][\s\S]*?\]\]/gi, '')
+    .replace(/【\s*(?:img|image|图片|画|图)\s*[:：][^】]*】/gi, '')
+    .trim();
 }
 
 export default function ChatView() {
@@ -525,11 +528,9 @@ export default function ChatView() {
                                   <span className="h-6 w-6 animate-spin rounded-full border-2 border-line border-t-brand" />
                                   <span className="text-[11px]">在画了…</span>
                                 </div>
-                                {att?.prompt ? (
-                                  <span className="line-clamp-2 block border-t border-line px-2.5 py-1.5 text-[10.5px] leading-snug text-fg-dimmer">
-                                    {att.prompt}
-                                  </span>
-                                ) : null}
+                                <span className="block border-t border-line px-2.5 py-1.5 text-[10.5px] leading-snug text-fg-dimmer">
+                                  画好会直接出现在这里
+                                </span>
                               </div>
                             </div>
                           );
@@ -569,16 +570,11 @@ export default function ChatView() {
                               >
                                 <img
                                   src={assetUrl(att?.url || '')}
-                                  alt={shown || '生成的图片'}
+                                  alt="生成的图片"
                                   className="block max-h-[360px] w-full object-contain"
                                   loading="lazy"
                                 />
                               </button>
-                              {shown ? (
-                                <span className="block px-3 py-2 text-[11px] leading-snug text-fg-dimmer">
-                                  {shown}
-                                </span>
-                              ) : null}
                             </div>
                           </div>
                         );

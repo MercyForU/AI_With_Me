@@ -9,7 +9,7 @@ function endpointOf(provider) {
     : `${provider.baseUrl}/chat/completions`;
 }
 
-function bodyOf(provider, model, messages, stream, tools) {
+function bodyOf(provider, model, messages, stream, tools, toolChoice) {
   if (provider.type === 'ollama') {
     return { model, messages, stream, options: { temperature: 0.9 } };
   }
@@ -17,7 +17,7 @@ function bodyOf(provider, model, messages, stream, tools) {
   // 只有声明支持工具调用的供应商才带 tools，否则中转可能直接 400
   if (tools && tools.length) {
     body.tools = tools;
-    body.tool_choice = 'auto';
+    body.tool_choice = toolChoice || 'auto';
   }
   return body;
 }
@@ -36,7 +36,7 @@ function mergeToolCall(acc, piece) {
  * 流式对话。onDelta 收到增量文本；返回完整文本。
  * 上游中断会抛错，已产生的文本放在 error.partial 里。
  */
-async function streamChat({ provider, model, messages, signal, onDelta, tools }) {
+async function streamChat({ provider, model, messages, signal, onDelta, tools, toolChoice }) {
   if (!provider) throw new Error('没有可用的模型供应商，请先在设置里配置');
   if (provider.type === 'openai' && !provider.apiKey) {
     throw new Error('这个供应商还没有填 API Key');
@@ -48,7 +48,7 @@ async function streamChat({ provider, model, messages, signal, onDelta, tools })
   const res = await fetch(endpointOf(provider), {
     method: 'POST',
     headers,
-    body: JSON.stringify(bodyOf(provider, model, messages, true, tools)),
+    body: JSON.stringify(bodyOf(provider, model, messages, true, tools, toolChoice)),
     signal,
   });
 
@@ -69,7 +69,7 @@ async function streamChat({ provider, model, messages, signal, onDelta, tools })
       const plain = await fetch(endpointOf(provider), {
         method: 'POST',
         headers,
-        body: JSON.stringify(bodyOf(provider, model, messages, false, tools)),
+        body: JSON.stringify(bodyOf(provider, model, messages, false, tools, toolChoice)),
         signal,
       });
       plainStatus = plain.status;

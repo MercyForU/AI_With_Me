@@ -100,6 +100,7 @@ export async function chatOnce({
     body.tool_choice = 'auto';
   }
 
+
   const r = await request(url, 'POST', headersOf(provider), body);
 
   if (r.status >= 400) {
@@ -142,6 +143,7 @@ export async function chatStream({
   model,
   messages,
   tools,
+  toolChoice,
   onDelta,
   signal,
 }: {
@@ -149,6 +151,8 @@ export async function chatStream({
   model: string;
   messages: ChatMessage[];
   tools?: unknown[];
+  /** 指定必须调用的工具（生图兜底重试用） */
+  toolChoice?: unknown;
   onDelta?: (text: string) => void;
   signal?: AbortSignal;
 }): Promise<{ text: string; toolCalls: ToolCall[] }> {
@@ -159,7 +163,7 @@ export async function chatStream({
       const body: Record<string, unknown> = { model, messages, stream: true, temperature: 0.9 };
       if (tools && tools.length) {
         body.tools = tools;
-        body.tool_choice = 'auto';
+        body.tool_choice = toolChoice || 'auto';
       }
       const res = await fetch(`${base}/chat/completions`, {
         method: 'POST',

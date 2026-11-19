@@ -38,21 +38,75 @@ const IMAGE_TOOL = {
   },
 };
 
-/** 从模型回复里取出画图意图：原生 tool_calls 优先，其次 [[img: ...]] 标记 */
-function extractDrawIntent(toolCalls, text, mode) {
-  if (mode === 'tool' && Array.isArray(toolCalls) && toolCalls.length) {
-    const call = toolCalls.find((t) => t.name === 'generate_image');
+/** 各种可能被模型写出来的「我要画这张图」标记 */
+const DRAW_MARKERS = [
+  /\[\[\s*(?:img|image|picture|图片|画|图)\s*[:：]\s*([^\]\n]+?)\s*\]\]/i,
+  /【\s*(?:img|image|图片|画|图)\s*[:：]\s*([^】]+?)\s*】/i,
+  /(?:^|\n)\s*[\[【]\s*(?:img|image|图片|画)\s*[:：]\s*([^\]】\n]+?)\s*[\]】]?\s*(?=\n|$)/i,
+];
+
+function unescapeJsonString(raw) {
+  try {
+    return JSON.parse(`"${raw}"`);
+  } catch {
+    return raw.replace(/\\n/g, '\n').replace(/\\"/g, '"');
+  }
+}
+
+/**
+ * 从模型回复里取出画图意图。
+ * 不再只在 tool 模式看 tool_calls、只在 marker 模式看标记：
+ * 中转把工具调用写成文本、模型写错括号、写完标记又补一句话，这些都得兜住。
+ */
+function extractDrawIntent(toolCalls, text) {
+  // 1) 原生 tool_calls
+  if (Array.isArray(toolCalls)) {
+    const call = toolCalls.find((t) => t && t.name === 'generate_image');
     if (call) {
       try {
         const args = JSON.parse(call.arguments || '{}');
         if (args.prompt && String(args.prompt).trim()) return String(args.prompt).trim();
       } catch {
-        /* 参数不合法就当作没画 */
+        /* 参数不合法就往下找文本 */
       }
     }
   }
-  const m = text.match(/\[\[img:\s*([^\]]+)\]\]/i);
-  return m ? m[1].trim() : '';
+
+  const t = String(text || '');
+
+  // 2) 各种括号写法
+  for (const re of DRAW_MARKERS) {
+    const m = t.match(re);
+    if (m && m[1] && m[1].trim()) return m[1].trim();
+  }
+
+  // 3) 工具调用被当成文本吐出来：{"name":"generate_image","arguments":"{\"prompt\":\"...\"}"}
+  // 注意 prompt 可能被转义成 \"prompt\"，先拍平再找
+  const flat = t.replace(/\\"/g, '"');
+  if (/generate_image/.test(flat)) {
+    const m = flat.match(/"prompt"\s*:\s*"((?:[^"\\]|\\.)*)"/i);
+    if (m) {
+      const p = unescapeJsonString(m[1]).trim();
+      if (p) return p;
+    }
+  }
+
+  // 4) 整条消息就是一个 {"prompt": "..."}
+  const only = t.trim().match(/^\{\s*"prompt"\s*:\s*"((?:[^"\\]|\\.)*)"\s*\}\s*$/i);
+  if (only) return unescapeJsonString(only[1]).trim();
+
+  return '';
+}
+
+/** 把残留的标记 / 被当成文本的工具调用从正文里摘干净 */
+function cleanDrawResidue(text) {
+  return String(text || '')
+    .replace(/\[\[\s*(?:img|image|picture|图片|画|图)\s*[:：][\s\S]*?\]\]/gi, '')
+    .replace(/【\s*(?:img|image|图片|画|图)\s*[:：][^】]*】/gi, '')
+    .replace(/\{\s*"prompt"\s*:[\s\S]*?\}\s*$/i, '')
+    .replace(/\{\s*"name"\s*:\s*"generate_image"[\s\S]*$/i, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 function json(res, status, payload) {
@@ -1141,11 +1195,38 @@ async function handle(req, res, url) {
         });
       }
 
-      const drawPrompt = extractDrawIntent(result.toolCalls, result.text, drawMode);
-      // 标记协议下要把标记从正文里摘掉，别让用户看到 [[img: ...]]
       const rawText = preText + (result.text || '');
-      let finalText =
-        drawMode === 'marker' ? rawText.replace(/\[\[img:[^\]]*\]\]/gi, '').trim() : rawText.trim();
+      // 残留的标记、被当成文本吐出来的工具调用，一律从正文里摘掉
+      let finalText = cleanDrawResidue(rawText);
+      let drawPrompt = extractDrawIntent(result.toolCalls, rawText);
+
+      // 对方明明要图，模型却回了一大段文字（常是把提示词当成了回复）：
+      // 强制再要一次工具调用，免得把提示词原样发进聊天
+      if (!drawPrompt && img && wantsImage && drawMode === 'tool' && !/[?？]/.test(result.text || '')) {
+        try {
+          const forced = await llm.streamChat({
+            provider: resolved.config,
+            model: resolved.model,
+            messages: [
+              ...conversation,
+              { role: 'assistant', content: (result.text || '').slice(0, 800) || '（我这就画）' },
+              { role: 'user', content: '（直接用 generate_image 把上面这段画出来，不要再解释）' },
+            ],
+            tools,
+            toolChoice: { type: 'function', function: { name: 'generate_image' } },
+            signal: controller.signal,
+            onDelta: () => {},
+          });
+          const p = extractDrawIntent(forced.toolCalls, forced.text);
+          if (p) {
+            drawPrompt = p;
+            // 原来那段大概率就是画面描述，留着会像「把提示词发出来了」
+            if ((result.text || '').length > 40) finalText = '好，我画一张给你看。';
+          }
+        } catch (e) {
+          console.warn('[image] 强制画图重试失败：', e.message);
+        }
+      }
 
       if (!finalText && !drawPrompt) throw new Error('模型没有返回内容');
 
