@@ -85,7 +85,12 @@ export function buildCardFile(
   };
 }
 
-export function buildChatFile(character: Character, messages: Message[]): ChatFile {
+export function buildChatFile(
+  character: Character,
+  messages: Message[],
+  opts: { withImages?: boolean } = {},
+): ChatFile {
+  const withImages = opts.withImages !== false;
   return {
     spec: CHAT_SPEC,
     version: 1,
@@ -99,7 +104,7 @@ export function buildChatFile(character: Character, messages: Message[]): ChatFi
         content: m.content,
         kind: m.kind,
         created_at: m.created_at,
-        ...(m.attachments && m.attachments.length ? { attachments: m.attachments } : {}),
+        ...(withImages && m.attachments && m.attachments.length ? { attachments: m.attachments } : {}),
       })),
   };
 }

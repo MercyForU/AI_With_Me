@@ -64,7 +64,7 @@ export default function ChatView() {
     stopStreaming,
     models,
     exportCharacter,
-    exportChat,
+    askExportChat,
     addMemory,
     loadingChar,
     currentModelOption,
@@ -513,6 +513,22 @@ export default function ChatView() {
                       (() => {
                         const att = m.attachments?.[0];
                         const status = att?.status || 'done';
+                        // 只导了文字的聊天记录里，图片消息没有附件，退化成普通气泡
+                        if (!att || (!att.url && status === 'done')) {
+                          return (
+                            <div className="flex items-end gap-2">
+                              <Avatar
+                                emoji={active.emoji}
+                                accent={active.accent}
+                                src={active.avatar_url}
+                                size={28}
+                              />
+                              <div className="max-w-[78%] whitespace-pre-wrap break-words rounded-2xl rounded-bl-md border border-line bg-raise/80 px-3.5 py-2.5 text-[14px] leading-[1.55] text-fg">
+                                {shown}
+                              </div>
+                            </div>
+                          );
+                        }
                         // 还在画：先占个位，画好之后会被轮询替换成真图
                         if (status === 'pending') {
                           return (
@@ -758,7 +774,7 @@ export default function ChatView() {
                 setMemoryDraft('');
               }}
               onExport={() => void exportCharacter(active.id)}
-              onExportChat={() => void exportChat(active.id)}
+              onExportChat={() => active && askExportChat(active.id)}
             />
           </aside>
 
@@ -783,7 +799,7 @@ export default function ChatView() {
                     setMemoryDraft('');
                   }}
                   onExport={() => void exportCharacter(active.id)}
-                  onExportChat={() => void exportChat(active.id)}
+                  onExportChat={() => active && askExportChat(active.id)}
                 />
               </div>
             </div>

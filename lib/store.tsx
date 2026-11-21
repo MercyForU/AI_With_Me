@@ -9,7 +9,7 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import { api, ApiError, downloadJson, errorMessage, streamChat } from './api';
+import { api, ApiError, errorMessage, streamChat } from './api';
 import {
   buildCardFile,
   buildChatFile,
@@ -151,8 +151,12 @@ export type AppContextValue = {
   deletePost: (postId: number) => Promise<void>;
   toggleLike: (postId: number) => Promise<void>;
   exportCharacter: (id: number) => Promise<void>;
-  /** 聊天记录单独导出 */
-  exportChat: (id: number) => Promise<void>;
+  /** 聊天记录单独导出（withImages=false 只导文字） */
+  exportChat: (id: number, withImages?: boolean) => Promise<void>;
+  /** 点了「导出聊天记录」后弹的那个询问框 */
+  exportChatTarget: { id: number; name: string; images: number } | null;
+  askExportChat: (id: number) => void;
+  closeExportChat: () => void;
   importCard: (text: string) => Promise<Character | null>;
   exportAll: () => Promise<void>;
   importAll: (file: File) => Promise<void>;
@@ -988,7 +992,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   /** 聊天记录单独导出，和角色卡互不干扰 */
   const exportChat = useCallback(
-    async (id: number) => {
+    async (id: number, withImages = true) => {
       const character = characters.find((c) => c.id === id);
       if (!character) return;
       try {
@@ -998,9 +1002,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           notify('这个角色还没有聊天记录', 'err');
           return;
         }
-        const file = buildChatFile(character, list);
-        // 图片单独存文件，导出时要内嵌进来，否则换台机器就看不到图了
-        const embedded = await embedChatImages(file);
+        const file = buildChatFile(character, list, { withImages });
+        // 带图时把图片读成 base64 内嵌，换台设备也能看
+        const embedded = withImages
+          ? await embedChatImages(file)
+          : { count: 0, truncated: false };
         const how = await downloadJsonFile(file, character.name, 'chat');
         const pic = embedded.count
           ? `，含 ${embedded.count} 张图${embedded.truncated ? '（超出上限的只留了路径）' : ''}`
@@ -1016,6 +1022,27 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     },
     [characters, notify],
   );
+
+  const [exportChatTarget, setExportChatTarget] = useState<{
+    id: number;
+    name: string;
+    images: number;
+  } | null>(null);
+
+  const askExportChat = useCallback(
+    (id: number) => {
+      const c = characters.find((x) => x.id === id);
+      if (!c) return;
+      const list = messages[id] ?? [];
+      const images = list.filter(
+        (m) => m.kind === 'image' && m.attachments?.[0]?.status !== 'failed',
+      ).length;
+      setExportChatTarget({ id, name: c.name, images });
+    },
+    [characters, messages],
+  );
+
+  const closeExportChat = useCallback(() => setExportChatTarget(null), []);
 
   const importCard = useCallback(
     async (text: string) => {
@@ -1052,8 +1079,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     try {
       const data = await api<unknown>('/api/export');
       const stamp = new Date().toISOString().slice(0, 10);
-      downloadJson(`nuan-backup-${stamp}.json`, data);
-      notify('已导出完整备份');
+      // 手机端 a[download] 不生效，必须写文件 + 系统分享
+      const how = await downloadJsonFile(data, `nuan-backup-${stamp}`, 'backup');
+      notify(
+        how === 'copied' ? '备份已复制到剪贴板（写文件失败）' : '完整备份已导出',
+      );
     } catch (e) {
       notify(errorMessage(e, '导出失败'), 'err');
     }
@@ -1258,6 +1288,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     toggleLike,
     exportCharacter,
     exportChat,
+    exportChatTarget,
+    askExportChat,
+    closeExportChat,
     importCard,
     exportAll,
     importAll,

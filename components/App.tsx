@@ -10,6 +10,7 @@ import CharactersView from './CharactersView';
 import CircleView from './CircleView';
 import Settings from './Settings';
 import MemoryPanel from './MemoryPanel';
+import ExportChatDialog from './ExportChatDialog';
 import { Toasts } from './ui';
 import { IconChat, IconGlobe, IconSettings, IconUser } from './icons';
 
@@ -177,6 +178,7 @@ export function Shell() {
 
       <Settings />
       <MemoryPanel />
+      <ExportChatDialog />
     </div>
   );
 }

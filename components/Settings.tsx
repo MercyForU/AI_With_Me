@@ -73,7 +73,7 @@ export default function Settings() {
     exportAll,
     importAll,
     exportCharacter,
-    exportChat,
+    askExportChat,
     signOut,
     notify,
     openSettings,
@@ -535,7 +535,7 @@ export default function Settings() {
               导出角色卡
             </button>
             <button
-              onClick={() => active && void exportChat(active.id)}
+              onClick={() => active && askExportChat(active.id)}
               disabled={!active}
               className="btn-ghost h-9 flex-1 text-[12px] disabled:opacity-50"
             >
