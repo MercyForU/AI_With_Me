@@ -827,7 +827,15 @@ async function handle(req, res, url) {
     for (const msg of list.slice(0, 5000)) {
       const content = str(msg.content, 8000);
       if (!content || msg.kind === 'system') continue;
-      insertMessage(id, msg.role === 'assistant' ? 'assistant' : 'user', content, str(msg.kind, 20) || 'text');
+      // 图片消息的附件要一起带过来，否则导回去只剩文字
+      const atts = Array.isArray(msg.attachments) ? msg.attachments.slice(0, 4) : null;
+      insertMessage(
+        id,
+        msg.role === 'assistant' ? 'assistant' : 'user',
+        content,
+        str(msg.kind, 20) || 'text',
+        atts,
+      );
       count += 1;
     }
     return json(res, 200, { imported: count });

@@ -663,7 +663,15 @@ export async function handle(
       const row = m as Record<string, unknown>;
       const content = str(row.content, 8000);
       if (!content || row.kind === 'system') continue;
-      await insertMessage(id, row.role === 'assistant' ? 'assistant' : 'user', content, str(row.kind, 20) || 'text');
+      // 图片消息的附件要一起带过来
+      const atts = Array.isArray(row.attachments) ? (row.attachments as unknown[]).slice(0, 4) : null;
+      await insertMessage(
+        id,
+        row.role === 'assistant' ? 'assistant' : 'user',
+        content,
+        str(row.kind, 20) || 'text',
+        atts,
+      );
       count += 1;
     }
     return ok({ imported: count });

@@ -1,7 +1,8 @@
 import { Capacitor } from '@capacitor/core';
 import { Directory, Encoding, Filesystem } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
-import type { Character, Memory, MemoryChunkItem, Message } from './types';
+import type { Attachment, Character, Memory, MemoryChunkItem, Message } from './types';
+import { assetUrl } from './base';
 
 /** 角色卡：人设 + 记忆（不含聊天记录） */
 export const CARD_SPEC = 'nuan.character.v2';
@@ -42,7 +43,7 @@ export type ChatFile = {
     content: string;
     kind: string;
     created_at: string;
-    attachments?: unknown[];
+    attachments?: Attachment[];
   }[];
 };
 
@@ -101,6 +102,59 @@ export function buildChatFile(character: Character, messages: Message[]): ChatFi
         ...(m.attachments && m.attachments.length ? { attachments: m.attachments } : {}),
       })),
   };
+}
+
+const MAX_EMBED_IMAGES = 40;
+const MAX_EMBED_BYTES = 40 * 1024 * 1024;
+
+async function blobToDataUrl(blob: Blob): Promise<string> {
+  // 不用 FileReader：它在部分运行环境里没有，arrayBuffer + btoa 到处都能跑
+  const buf = await blob.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  let bin = '';
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return `data:${blob.type || 'image/png'};base64,${btoa(bin)}`;
+}
+
+/**
+ * 把聊天里的图片内嵌成 data URL。
+ *
+ * 电脑端的图片是 `/uploads/chat/xxx.png`，只存了路径——导出到别的机器/手机上就是死链。
+ * 这里在导出前把文件读成 base64 塞进 JSON，单个 .chat.json 才是自带的。
+ * 有总量上限，超出的保留原路径（至少还能在本机看到）。
+ */
+export async function embedChatImages(
+  file: ChatFile,
+): Promise<{ count: number; truncated: boolean }> {
+  let count = 0;
+  let bytes = 0;
+
+  for (const m of file.messages) {
+    const list = m.attachments || [];
+    for (const att of list) {
+      if (att.type !== 'image' || !att.url || att.url.startsWith('data:')) continue;
+      if (att.status === 'pending' || att.status === 'failed') continue;
+      if (count >= MAX_EMBED_IMAGES || bytes >= MAX_EMBED_BYTES) {
+        return { count, truncated: true };
+      }
+      try {
+        const res = await fetch(assetUrl(att.url));
+        if (!res.ok) continue;
+        const blob = await res.blob();
+        if (bytes + blob.size > MAX_EMBED_BYTES) return { count, truncated: true };
+        att.url = await blobToDataUrl(blob);
+        bytes += blob.size;
+        count += 1;
+      } catch {
+        /* 单张失败就保留路径，不影响整体导出 */
+      }
+    }
+  }
+
+  return { count, truncated: false };
 }
 
 /** 读文件：只做格式校验，具体怎么导入交给调用方按 spec 分发 */

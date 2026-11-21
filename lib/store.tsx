@@ -15,6 +15,7 @@ import {
   buildChatFile,
   CHAT_SPEC,
   downloadJsonFile,
+  embedChatImages,
   parseJsonFile,
 } from './characterFile';
 import type {
@@ -998,11 +999,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           return;
         }
         const file = buildChatFile(character, list);
+        // 图片单独存文件，导出时要内嵌进来，否则换台机器就看不到图了
+        const embedded = await embedChatImages(file);
         const how = await downloadJsonFile(file, character.name, 'chat');
+        const pic = embedded.count
+          ? `，含 ${embedded.count} 张图${embedded.truncated ? '（超出上限的只留了路径）' : ''}`
+          : '';
         notify(
           how === 'copied'
             ? '聊天记录已复制到剪贴板（写文件失败）'
-            : `聊天记录已导出，共 ${file.messages.length} 条`,
+            : `聊天记录已导出，共 ${file.messages.length} 条${pic}`,
         );
       } catch (e) {
         notify(errorMessage(e, '导出失败'), 'err');
