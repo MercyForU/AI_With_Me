@@ -11,6 +11,7 @@ import CircleView from './CircleView';
 import Settings from './Settings';
 import MemoryPanel from './MemoryPanel';
 import ExportChatDialog from './ExportChatDialog';
+import BackGuard from './BackGuard';
 import { Toasts } from './ui';
 import { IconChat, IconGlobe, IconSettings, IconUser } from './icons';
 
@@ -179,6 +180,8 @@ export function Shell() {
       <Settings />
       <MemoryPanel />
       <ExportChatDialog />
+      {/* 安卓返回键：逐级后退，退到主界面再问退出 */}
+      <BackGuard tab={tab} onBackToHome={() => setTab('chat')} />
     </div>
   );
 }

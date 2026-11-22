@@ -49,6 +49,8 @@ export default function CharactersView() {
     removeMemory,
     currentModelOption,
     modelOptionFor,
+    setCharacterDetailOpen,
+    characterDetailOpen,
     openSettings,
     openMemoryPanel,
     memoryStats,
@@ -97,6 +99,14 @@ export default function CharactersView() {
     };
   }, [current?.id, memoryStats]);
 
+  // 双向同步：本地进出详情 → 通知外层；外层被返回键关掉 → 本地也退出
+  useEffect(() => {
+    setCharacterDetailOpen(Boolean(mobileDetail && current));
+  }, [mobileDetail, current, setCharacterDetailOpen]);
+  useEffect(() => {
+    if (!characterDetailOpen) setMobileDetail(false);
+  }, [characterDetailOpen]);
+  useEffect(() => () => setCharacterDetailOpen(false), [setCharacterDetailOpen]);
 
   async function handleImport(file: File) {
     const text = await file.text();

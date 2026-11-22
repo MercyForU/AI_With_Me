@@ -99,7 +99,22 @@ export type AppContextValue = {
   /** 移动端是否正停在某个角色的对话里（此时底部 tab 要藏起来） */
   chatDetailOpen: boolean;
   setChatDetailOpen: (v: boolean) => void;
+  /** 移动端是否停在某个角色的详情页 */
+  characterDetailOpen: boolean;
+  setCharacterDetailOpen: (v: boolean) => void;
+  /** 全屏看图当前显示的图（null = 关闭） */
+  imageViewerSrc: string | null;
+  setImageViewerSrc: (v: string | null) => void;
 
+  /** 返回栈：移动端按返回时依次关闭 / 回退的层级，最后才是「退出吗」 */
+  backStack: () => Array<{ key: string; run: () => void }>;
+  /**
+   * 组件自己登记一个「返回时先处理我」的回调（比如设置里的供应商表单、游戏里的选单）。
+   * 返回取消函数，卸载时记得调用。
+   */
+  registerBack: (id: string, run: () => void) => () => void;
+  /** 当前是否还有可以返回的层级 */
+  canGoBack: () => boolean;
   settingsOpen: boolean;
   openSettings: () => void;
   closeSettings: () => void;
@@ -205,6 +220,18 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [chatDetailOpen, setChatDetailOpen] = useState(false);
+  const [characterDetailOpen, setCharacterDetailOpen] = useState(false);
+  const [imageViewerSrc, setImageViewerSrc] = useState<string | null>(null);
+  // 组件登记的返回回调（后登记的优先）
+  const backHandlersRef = useRef<Array<{ id: string; run: () => void }>>([]);
+  const registerBack = useCallback((id: string, run: () => void) => {
+    const list = backHandlersRef.current.filter((x) => x.id !== id);
+    list.push({ id, run });
+    backHandlersRef.current = list;
+    return () => {
+      backHandlersRef.current = backHandlersRef.current.filter((x) => x.id !== id);
+    };
+  }, []);
   const [memoryPanel, setMemoryPanel] = useState<{ open: boolean; characterId: number | null }>({
     open: false,
     characterId: null,
@@ -1218,6 +1245,57 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     };
   }, [pendingKey, notify]);
 
+  /**
+   * 返回栈。移动端的「返回键」按这个顺序退：
+   * 弹层 → 二级页面 → 一级 Tab → 最后才是「退出吗」。
+   *
+   * 为什么用函数而不是数组：这些开关分散在不同组件里，
+   * 每次按返回时现算一遍最省事，也不会出现过期的引用。
+   */
+  const backStack = useCallback(() => {
+    const list: Array<{ key: string; run: () => void }> = [];
+
+    // 0) 组件自己登记的（弹窗里的二级表单等），后登记的优先
+    for (const h of [...backHandlersRef.current].reverse()) {
+      list.push({ key: h.id, run: h.run });
+    }
+
+    // 1) 各种弹层（整屏的看图在最上面，先关）
+    if (imageViewerSrc) {
+      list.push({ key: 'imageViewer', run: () => setImageViewerSrc(null) });
+    }
+    if (exportChatTarget) {
+      list.push({ key: 'exportChat', run: () => setExportChatTarget(null) });
+    }
+    if (memoryPanel.open) {
+      list.push({ key: 'memoryPanel', run: () => closeMemoryPanel() });
+    }
+    if (settingsOpen) {
+      list.push({ key: 'settings', run: () => closeSettings() });
+    }
+
+    // 2) 页面层级（由深到浅）
+    if (chatDetailOpen) {
+      list.push({ key: 'chatDetail', run: () => setChatDetailOpen(false) });
+    }
+    if (characterDetailOpen) {
+      list.push({ key: 'characterDetail', run: () => setCharacterDetailOpen(false) });
+    }
+
+    return list;
+  }, [
+    closeMemoryPanel,
+    closeSettings,
+    chatDetailOpen,
+    characterDetailOpen,
+    exportChatTarget,
+    imageViewerSrc,
+    memoryPanel.open,
+    settingsOpen,
+  ]);
+
+  const canGoBack = useCallback(() => backStack().length > 0, [backStack]);
+
   const value: AppContextValue = {
     ready,
     needsSetup,
@@ -1254,6 +1332,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     toasts,
     chatDetailOpen,
     setChatDetailOpen,
+    characterDetailOpen,
+    setCharacterDetailOpen,
+    imageViewerSrc,
+    setImageViewerSrc,
+    backStack,
+    canGoBack,
+    registerBack,
     settingsOpen,
     openSettings,
     closeSettings,

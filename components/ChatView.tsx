@@ -76,15 +76,17 @@ export default function ChatView() {
     memoryStats,
     resetContext,
     notify,
+    chatDetailOpen,
     setChatDetailOpen,
+    imageViewerSrc,
+    setImageViewerSrc,
+    registerBack,
   } = useApp();
 
   const [draft, setDraft] = useState('');
-  const [mobileOpen, setMobileOpen] = useState(false);
   const [showInfo, setShowInfo] = useState(false);
   const [gameOpen, setGameOpen] = useState(false);
   const [clearOpen, setClearOpen] = useState(false);
-  const [viewerSrc, setViewerSrc] = useState<string | null>(null);
   const [clearing, setClearing] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [archived, setArchived] = useState(0);
@@ -95,6 +97,8 @@ export default function ChatView() {
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const activeModel = modelOptionFor(activeId);
+  const mobileOpen = chatDetailOpen;
+  const setMobileOpen = setChatDetailOpen;
   const showChatOnMobile = Boolean(mobileOpen && active);
   const list = messages[activeId ?? -1] ?? [];
   const memList = memories[activeId ?? -1] ?? [];
@@ -162,10 +166,13 @@ export default function ChatView() {
     return () => window.clearTimeout(t);
   }, [activeId, showChatOnMobile, scrollToBottom]);
 
-  // 让外层知道「移动端正停在对话里」，好把底部 tab 收起来
+  // 小游戏弹窗也是「一层」，返回时先关它
   useEffect(() => {
-    setChatDetailOpen(Boolean(mobileOpen && active));
-  }, [mobileOpen, active, setChatDetailOpen]);
+    if (!gameOpen) return;
+    return registerBack('game-hub', () => setGameOpen(false));
+  }, [gameOpen, registerBack]);
+
+  // 移动端进对话 = chatDetailOpen；离开这个页面时复位，别让 tab 一直藏着
   useEffect(() => () => setChatDetailOpen(false), [setChatDetailOpen]);
 
   useEffect(() => {
@@ -580,7 +587,7 @@ export default function ChatView() {
                             <div className="max-w-[78%] overflow-hidden rounded-2xl rounded-bl-md border border-line bg-raise/80">
                               {/* 点开进入看图模式 */}
                               <button
-                                onClick={() => setViewerSrc(att?.url || '')}
+                                onClick={() => setImageViewerSrc(att?.url || '')}
                                 className="block w-full cursor-zoom-in transition active:opacity-90"
                                 title="点开看大图"
                               >
@@ -835,7 +842,7 @@ export default function ChatView() {
 
       <GameHub open={gameOpen} character={active} onClose={() => setGameOpen(false)} />
 
-      <ImageViewer src={viewerSrc} onClose={() => setViewerSrc(null)} />
+      <ImageViewer src={imageViewerSrc} onClose={() => setImageViewerSrc(null)} />
     </div>
   );
 }

@@ -64,6 +64,7 @@ export default function Settings() {
     saveEmbedSource,
     memoryStats,
     openMemoryPanel,
+    registerBack,
     rebuild,
     startRebuild,
     createProvider,
@@ -120,6 +121,12 @@ export default function Settings() {
       supportsVision: p.supportsVision,
     });
   }
+
+  // 供应商表单是设置里的二级页面，返回键先关它而不是整个设置
+  useEffect(() => {
+    if (!form) return;
+    return registerBack('settings-form', () => setForm(null));
+  }, [form, registerBack]);
 
   async function runTest(p: Provider) {
     setTesting(p.id);

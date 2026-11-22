@@ -62,12 +62,18 @@ export default function GameHub({
   character: Character | null;
   onClose: () => void;
 }) {
-  const { pushMessage } = useApp();
+  const { pushMessage, registerBack } = useApp();
   const [step, setStep] = useState<'pick' | GameKey>('pick');
 
   useEffect(() => {
     if (open) setStep('pick');
   }, [open]);
+
+  // 进了某个游戏时，返回先回到选游戏，而不是直接关掉整个小游戏
+  useEffect(() => {
+    if (!open || step === 'pick') return;
+    return registerBack('game-detail', () => setStep('pick'));
+  }, [open, step, registerBack]);
 
   if (!character) return null;
 
