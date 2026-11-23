@@ -22,8 +22,10 @@ export default function BackGuard({
   tab: string;
   onBackToHome: () => void;
 }) {
-  const { backStack } = useApp();
+  const { backStack, active, characters } = useApp();
   const [askExit, setAskExit] = useState(false);
+  // 退出提示里带上当前角色名，比干巴巴一句「确认退出」更像在跟人说话
+  const who = active?.name || (characters.length ? characters[0].name : '她');
   const stackRef = useRef(backStack);
   stackRef.current = backStack;
   const tabRef = useRef(tab);
@@ -90,12 +92,20 @@ export default function BackGuard({
     <Modal
       open={askExit}
       onClose={() => setAskExit(false)}
-      title="退出暧？"
-      subtitle="聊天记录和记忆都留在本机，下次打开还在"
-      width="max-w-xs"
+      width="max-w-[320px]"
+      center
     >
-      <div className="flex gap-2">
-        <button onClick={() => setAskExit(false)} className="btn-primary flex-1">
+      <div className="text-center">
+        <p className="text-[15px] font-semibold text-fg">要走了吗</p>
+        <p className="mt-2 text-[12.5px] leading-relaxed text-fg-dim">
+          {who}还在等你。
+          <br />
+          刚才说的那些，都记着呢。
+        </p>
+      </div>
+
+      <div className="mt-5 flex flex-col gap-2">
+        <button onClick={() => setAskExit(false)} className="btn-primary w-full">
           再待一会儿
         </button>
         <button
@@ -103,9 +113,9 @@ export default function BackGuard({
             setAskExit(false);
             if (Capacitor.isNativePlatform()) void CapacitorApp.exitApp();
           }}
-          className="btn-ghost flex-1 text-danger hover:text-danger"
+          className="w-full rounded-xl py-2 text-[12px] text-fg-dimmer transition hover:text-fg-dim"
         >
-          退出
+          真的走了
         </button>
       </div>
     </Modal>

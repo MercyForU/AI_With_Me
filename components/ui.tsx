@@ -82,6 +82,7 @@ export function Modal({
   children,
   footer,
   width = 'max-w-md',
+  center = false,
 }: {
   open: boolean;
   onClose: () => void;
@@ -90,6 +91,8 @@ export function Modal({
   children: React.ReactNode;
   footer?: React.ReactNode;
   width?: string;
+  /** 手机上也居中（默认是底部抽屉，像系统对话框时传 true） */
+  center?: boolean;
 }) {
   useEffect(() => {
     if (!open) return;
@@ -104,12 +107,16 @@ export function Modal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-end justify-center bg-overlay p-0 backdrop-blur-sm sm:items-center sm:p-6"
+      className={`fixed inset-0 z-50 flex justify-center bg-overlay backdrop-blur-sm ${
+        center ? 'items-center p-5' : 'items-end p-0 sm:items-center sm:p-6'
+      }`}
       onClick={onClose}
       role="presentation"
     >
       <div
-        className={`w-full ${width} animate-pop-in rounded-t-3xl border border-line bg-card p-6 shadow-panel sm:rounded-3xl`}
+        className={`w-full ${width} animate-pop-in border border-line bg-card p-6 shadow-panel ${
+          center ? 'rounded-3xl' : 'rounded-t-3xl sm:rounded-3xl'
+        }`}
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
